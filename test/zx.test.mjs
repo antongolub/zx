@@ -43,8 +43,8 @@ if (test('supports `--quiet` flag / Quiet mode is working')) {
 
 if (test('Eval script from https ref')) {
   let script = path.resolve('test/fixtures/echo.http')
-  let server = quiet($`while true; do cat ${script} | nc localhost -l 3000; done`)
-  let p = await quiet(withTimeout(2000)`node zx.mjs http://localhost:3000/echo.mjs`)
+  let server = $`while true; do cat ${script} | nc -lp 8000; done`
+  let p = await quiet(withTimeout(2000)`node zx.mjs http://127.0.0.1:8000/echo.mjs`)
 
   assert(p.stdout.includes('test'))
   server.kill()
