@@ -27,7 +27,7 @@
   },
   "scripts": {
     "test:cov": "c8 --reporter=html npm run test",
-    "test": "node zx.mjs test/full.test.mjs question",
+    "test": "node zx.mjs test/full.test.mjs",
     "test:zx": "npm run test zx",
     "test:index": "npm run test index"
   },
