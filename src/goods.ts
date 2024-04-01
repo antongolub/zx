@@ -40,8 +40,7 @@ export const globby = Object.assign(function globby(
   options?: GlobbyOptions
 ) {
   return globbyModule.globby(patterns, options)
-},
-globbyModule) as (typeof globbyModule)['globby'] & typeof globbyModule
+}, globbyModule) as (typeof globbyModule)['globby'] & typeof globbyModule
 export const glob = globby
 
 export function sleep(duration: Duration) {
@@ -198,7 +197,7 @@ export async function spinner<T>(
       result = await callback!()
     } finally {
       clearInterval(id as NodeJS.Timeout)
-      process.stderr.write(' '.repeat(process.stdout.columns - 1) + '\r')
+      process.stderr.write(' '.repeat((process.stdout.columns || 1) - 1) + '\r')
     }
     return result
   })

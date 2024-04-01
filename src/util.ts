@@ -12,10 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { promisify } from 'node:util'
-import { chalk, psTreeModule } from './vendor.js'
-
-export const psTree = promisify(psTreeModule)
+import { chalk, parseLine } from './vendor.js'
 
 export function noop() {}
 
@@ -25,6 +22,24 @@ export function randomId() {
 
 export function isString(obj: any) {
   return typeof obj === 'string'
+}
+
+export function normalizeMultilinePieces(
+  pieces: TemplateStringsArray
+): TemplateStringsArray {
+  return Object.assign(
+    pieces.map((p, i) =>
+      p.trim()
+        ? parseLine(p)
+            .words.map(({ w, e }) => {
+              if (w === '\\') return ''
+              return w.trim() + (p[e + 1] === ' ' ? ' ' : '')
+            })
+            .join(' ')
+        : pieces[i]
+    ),
+    { raw: pieces.raw }
+  )
 }
 
 export function quote(arg: string) {
@@ -219,7 +234,7 @@ export function errnoMessage(errno: number | undefined): string {
   )
 }
 
-export type Duration = number | `${number}s` | `${number}ms`
+export type Duration = number | `${number}m` | `${number}s` | `${number}ms`
 
 export function parseDuration(d: Duration) {
   if (typeof d == 'number') {
@@ -229,6 +244,8 @@ export function parseDuration(d: Duration) {
     return +d.slice(0, -1) * 1000
   } else if (/\d+ms/.test(d)) {
     return +d.slice(0, -2)
+  } else if (/\d+m/.test(d)) {
+    return +d.slice(0, -1) * 1000 * 60
   }
   throw new Error(`Unknown duration: "${d}".`)
 }
@@ -356,3 +373,16 @@ const reservedWords = [
   'done',
   'in',
 ]
+
+export function getCallerLocation(err = new Error()) {
+  return getCallerLocationFromString(err.stack)
+}
+
+export function getCallerLocationFromString(stackString = 'unknown') {
+  return (
+    stackString
+      .split(/^\s*(at\s)?/m)
+      .filter((s) => s?.includes(':'))[2]
+      ?.trim() || stackString
+  )
+}

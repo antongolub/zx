@@ -13,13 +13,16 @@
 // limitations under the License.
 
 import assert from 'node:assert'
-import { ChildProcess, spawn, StdioNull, StdioPipe } from 'node:child_process'
+import { spawn, spawnSync, StdioNull, StdioPipe } from 'node:child_process'
 import { AsyncLocalStorage, createHook } from 'node:async_hooks'
 import { Readable, Writable } from 'node:stream'
 import { inspect } from 'node:util'
 import {
+  exec,
+  buildCmd,
   chalk,
   which,
+  ps,
   type ChalkInstance,
   RequestInfo,
   RequestInit,
@@ -29,30 +32,45 @@ import {
   errnoMessage,
   exitCodeInfo,
   formatCmd,
+  getCallerLocation,
   noop,
+  normalizeMultilinePieces,
   parseDuration,
-  psTree,
   quote,
   quotePowerShell,
 } from './util.js'
 
-export type Shell = (
-  pieces: TemplateStringsArray,
-  ...args: any[]
-) => ProcessPromise
+export interface Shell {
+  (pieces: TemplateStringsArray, ...args: any[]): ProcessPromise
+  (opts: Partial<Options>): Shell
+  sync: {
+    (pieces: TemplateStringsArray, ...args: any[]): ProcessOutput
+    (opts: Partial<Options>): Shell
+  }
+}
 
 const processCwd = Symbol('processCwd')
+const syncExec = Symbol('syncExec')
 
 export interface Options {
   [processCwd]: string
+  [syncExec]: boolean
   cwd?: string
+  ac?: AbortController
+  input?: string | Buffer | Readable | ProcessOutput | ProcessPromise
   verbose: boolean
+  sync: boolean
   env: NodeJS.ProcessEnv
   shell: string | boolean
+  nothrow: boolean
   prefix: string
+  postfix: string
   quote: typeof quote
+  quiet: boolean
   spawn: typeof spawn
+  spawnSync: typeof spawnSync
   log: typeof log
+  kill: typeof kill
 }
 
 const storage = new AsyncLocalStorage<Options>()
@@ -67,29 +85,41 @@ hook.enable()
 
 export const defaults: Options = {
   [processCwd]: process.cwd(),
-  verbose: true,
+  [syncExec]: false,
+  verbose: false,
   env: process.env,
+  sync: false,
   shell: true,
+  nothrow: false,
+  quiet: false,
   prefix: '',
+  postfix: '',
   quote: () => {
     throw new Error('No quote function is defined: https://ï.at/no-quote-func')
   },
   spawn,
+  spawnSync,
   log,
+  kill,
+}
+const isWin = process.platform == 'win32'
+
+export function setupPowerShell() {
+  $.shell = which.sync('powershell.exe')
+  $.prefix = ''
+  $.postfix = '; exit $LastExitCode'
+  $.quote = quotePowerShell
 }
 
-try {
-  defaults.shell = which.sync('bash')
-  defaults.prefix = 'set -euo pipefail;'
-  defaults.quote = quote
-} catch (err) {
-  if (process.platform == 'win32') {
-    try {
-      defaults.shell = which.sync('powershell.exe')
-      defaults.quote = quotePowerShell
-    } catch (err) {
-      // no powershell?
-    }
+export function setupBash() {
+  $.shell = which.sync('bash')
+  $.prefix = 'set -euo pipefail;'
+  $.quote = quote
+}
+
+function checkShell() {
+  if (!$.shell) {
+    throw new Error(`shell is not available: setup guide goes here`)
   }
 }
 
@@ -97,68 +127,87 @@ function getStore() {
   return storage.getStore() || defaults
 }
 
-export const $ = new Proxy<Shell & Options>(
+export const $: Shell & Options = new Proxy<Shell & Options>(
   function (pieces, ...args) {
-    const from = new Error().stack!.split(/^\s*at\s/m)[2].trim()
+    checkShell()
+
+    if (!Array.isArray(pieces)) {
+      return function (this: any, ...args: any) {
+        const self = this
+        return within(() => {
+          return Object.assign($, pieces).apply(self, args)
+        })
+      }
+    }
+    const from = getCallerLocation()
     if (pieces.some((p) => p == undefined)) {
       throw new Error(`Malformed command at ${from}`)
     }
     let resolve: Resolve, reject: Resolve
     const promise = new ProcessPromise((...args) => ([resolve, reject] = args))
-    let cmd = pieces[0],
-      i = 0
-    while (i < args.length) {
-      let s
-      if (Array.isArray(args[i])) {
-        s = args[i].map((x: any) => $.quote(substitute(x))).join(' ')
-      } else {
-        s = $.quote(substitute(args[i]))
-      }
-      cmd += s + pieces[++i]
-    }
-    promise._bind(cmd, from, resolve!, reject!, getStore())
+    const cmd = buildCmd(
+      $.quote,
+      normalizeMultilinePieces(pieces as TemplateStringsArray),
+      args
+    ) as string
+    const snapshot = getStore()
+    const sync = snapshot[syncExec]
+    const callback = () => promise.isHalted || promise.run()
+
+    promise._bind(
+      cmd,
+      from,
+      resolve!,
+      (v: ProcessOutput) => {
+        reject!(v)
+        if (sync) throw v
+      },
+      snapshot
+    )
     // Postpone run to allow promise configuration.
-    setImmediate(() => promise.isHalted || promise.run())
-    return promise
+    sync ? callback() : setImmediate(callback)
+
+    return sync ? promise.output : promise
   } as Shell & Options,
   {
     set(_, key, value) {
       const target = key in Function.prototype ? _ : getStore()
-      Reflect.set(target, key, value)
+      Reflect.set(target, key === 'sync' ? syncExec : key, value)
+
       return true
     },
     get(_, key) {
+      if (key === 'sync') return $({ sync: true })
+
       const target = key in Function.prototype ? _ : getStore()
       return Reflect.get(target, key)
     },
   }
 )
 
-function substitute(arg: ProcessPromise | any) {
-  if (arg?.stdout) {
-    return arg.stdout.replace(/\n$/, '')
-  }
-  return `${arg}`
-}
+try {
+  setupBash()
+} catch (err) {}
 
 type Resolve = (out: ProcessOutput) => void
 type IO = StdioPipe | StdioNull
 
 export class ProcessPromise extends Promise<ProcessOutput> {
-  child?: ChildProcess
   private _command = ''
   private _from = ''
   private _resolve: Resolve = noop
   private _reject: Resolve = noop
   private _snapshot = getStore()
   private _stdio: [IO, IO, IO] = ['inherit', 'pipe', 'pipe']
-  private _nothrow = false
-  private _quiet = false
+  private _nothrow?: boolean
+  private _quiet?: boolean
   private _timeout?: number
-  private _timeoutSignal?: string
+  private _timeoutSignal = 'SIGTERM'
   private _resolved = false
   private _halted = false
   private _piped = false
+  private _zurk: ReturnType<typeof exec> | null = null
+  private _output: ProcessOutput | null = null
   _prerun = noop
   _postrun = noop
 
@@ -177,79 +226,103 @@ export class ProcessPromise extends Promise<ProcessOutput> {
   }
 
   run(): ProcessPromise {
-    const $ = this._snapshot
     if (this.child) return this // The _run() can be called from a few places.
     this._prerun() // In case $1.pipe($2), the $2 returned, and on $2._run() invoke $1._run().
+
+    const $ = this._snapshot
+    const self = this
+    const input = ($.input as ProcessPromise | ProcessOutput)?.stdout ?? $.input
+
+    if (input) this.stdio('pipe')
+
     $.log({
       kind: 'cmd',
       cmd: this._command,
-      verbose: $.verbose && !this._quiet,
+      verbose: self.isVerbose(),
     })
-    this.child = $.spawn($.prefix + this._command, {
+
+    this._zurk = exec({
+      input,
+      cmd: $.prefix + this._command + $.postfix,
       cwd: $.cwd ?? $[processCwd],
+      ac: $.ac,
       shell: typeof $.shell === 'string' ? $.shell : true,
-      stdio: this._stdio,
-      windowsHide: true,
       env: $.env,
+      spawn: $.spawn,
+      spawnSync: $.spawnSync,
+      stdio: this._stdio as any,
+      sync: $[syncExec],
+      detached: !isWin,
+      run: (cb) => cb(),
+      on: {
+        start: () => {
+          if (self._timeout) {
+            const t = setTimeout(
+              () => self.kill(self._timeoutSignal),
+              self._timeout
+            )
+            self.finally(() => clearTimeout(t)).catch(noop)
+          }
+        },
+        stdout: (data) => {
+          // If process is piped, don't print output.
+          if (self._piped) return
+          $.log({ kind: 'stdout', data, verbose: self.isVerbose() })
+        },
+        stderr: (data) => {
+          // Stderr should be printed regardless of piping.
+          $.log({ kind: 'stderr', data, verbose: !self.isQuiet() })
+        },
+        end: ({ error, stdout, stderr, stdall, status, signal }) => {
+          self._resolved = true
+
+          if (error) {
+            const message = ProcessOutput.getErrorMessage(error, self._from)
+            // Should we enable this?
+            // (nothrow ? self._resolve : self._reject)(
+            const output = new ProcessOutput(
+              null,
+              null,
+              stdout,
+              stderr,
+              stdall,
+              message
+            )
+            self._output = output
+            self._reject(output)
+          } else {
+            const message = ProcessOutput.getExitMessage(
+              status,
+              signal,
+              stderr,
+              self._from
+            )
+            const output = new ProcessOutput(
+              status,
+              signal,
+              stdout,
+              stderr,
+              stdall,
+              message
+            )
+            self._output = output
+            if (status === 0 || (self._nothrow ?? $.nothrow)) {
+              self._resolve(output)
+            } else {
+              self._reject(output)
+            }
+          }
+        },
+      },
     })
-    this.child.on('close', (code, signal) => {
-      let message = `exit code: ${code}`
-      if (code != 0 || signal != null) {
-        message = `${stderr || '\n'}    at ${this._from}`
-        message += `\n    exit code: ${code}${
-          exitCodeInfo(code) ? ' (' + exitCodeInfo(code) + ')' : ''
-        }`
-        if (signal != null) {
-          message += `\n    signal: ${signal}`
-        }
-      }
-      let output = new ProcessOutput(
-        code,
-        signal,
-        stdout,
-        stderr,
-        combined,
-        message
-      )
-      if (code === 0 || this._nothrow) {
-        this._resolve(output)
-      } else {
-        this._reject(output)
-      }
-      this._resolved = true
-    })
-    this.child.on('error', (err: NodeJS.ErrnoException) => {
-      const message =
-        `${err.message}\n` +
-        `    errno: ${err.errno} (${errnoMessage(err.errno)})\n` +
-        `    code: ${err.code}\n` +
-        `    at ${this._from}`
-      this._reject(
-        new ProcessOutput(null, null, stdout, stderr, combined, message)
-      )
-      this._resolved = true
-    })
-    let stdout = '',
-      stderr = '',
-      combined = ''
-    let onStdout = (data: any) => {
-      $.log({ kind: 'stdout', data, verbose: $.verbose && !this._quiet })
-      stdout += data
-      combined += data
-    }
-    let onStderr = (data: any) => {
-      $.log({ kind: 'stderr', data, verbose: $.verbose && !this._quiet })
-      stderr += data
-      combined += data
-    }
-    if (!this._piped) this.child.stdout?.on('data', onStdout) // If process is piped, don't collect or print output.
-    this.child.stderr?.on('data', onStderr) // Stderr should be printed regardless of piping.
+
     this._postrun() // In case $1.pipe($2), after both subprocesses are running, we can pipe $1.stdout to $2.stdin.
-    if (this._timeout && this._timeoutSignal) {
-      const t = setTimeout(() => this.kill(this._timeoutSignal), this._timeout)
-      this.finally(() => clearTimeout(t)).catch(noop)
-    }
+
     return this
+  }
+
+  get child() {
+    return this._zurk?.child
   }
 
   get stdin(): Writable {
@@ -336,19 +409,19 @@ export class ProcessPromise extends Promise<ProcessOutput> {
     }
   }
 
+  abort(reason?: string) {
+    if (!this.child)
+      throw new Error('Trying to abort a process without creating one.')
+
+    this._zurk?.ac.abort(reason)
+  }
+
   async kill(signal = 'SIGTERM'): Promise<void> {
     if (!this.child)
       throw new Error('Trying to kill a process without creating one.')
     if (!this.child.pid) throw new Error('The process pid is undefined.')
-    let children = await psTree(this.child.pid)
-    for (const p of children) {
-      try {
-        process.kill(+p.PID, signal)
-      } catch (e) {}
-    }
-    try {
-      process.kill(this.child.pid, signal)
-    } catch (e) {}
+
+    return $.kill(this.child.pid, signal)
   }
 
   stdio(stdin: IO, stdout: IO = 'pipe', stderr: IO = 'pipe'): ProcessPromise {
@@ -366,6 +439,14 @@ export class ProcessPromise extends Promise<ProcessOutput> {
     return this
   }
 
+  isQuiet(): boolean {
+    return this._quiet ?? this._snapshot.quiet
+  }
+
+  isVerbose(): boolean {
+    return this._snapshot.verbose && !this.isQuiet()
+  }
+
   timeout(d: Duration, signal = 'SIGTERM'): ProcessPromise {
     this._timeout = parseDuration(d)
     this._timeoutSignal = signal
@@ -379,6 +460,10 @@ export class ProcessPromise extends Promise<ProcessOutput> {
 
   get isHalted(): boolean {
     return this._halted
+  }
+
+  get output() {
+    return this._output
   }
 }
 
@@ -409,6 +494,10 @@ export class ProcessOutput extends Error {
     return this._combined
   }
 
+  valueOf() {
+    return this._combined.trim()
+  }
+
   get stdout() {
     return this._stdout
   }
@@ -425,6 +514,35 @@ export class ProcessOutput extends Error {
     return this._signal
   }
 
+  static getExitMessage(
+    code: number | null,
+    signal: NodeJS.Signals | null,
+    stderr: string,
+    from: string
+  ) {
+    let message = `exit code: ${code}`
+    if (code != 0 || signal != null) {
+      message = `${stderr || '\n'}    at ${from}`
+      message += `\n    exit code: ${code}${
+        exitCodeInfo(code) ? ' (' + exitCodeInfo(code) + ')' : ''
+      }`
+      if (signal != null) {
+        message += `\n    signal: ${signal}`
+      }
+    }
+
+    return message
+  }
+
+  static getErrorMessage(err: NodeJS.ErrnoException, from: string) {
+    return (
+      `${err.message}\n` +
+      `    errno: ${err.errno} (${errnoMessage(err.errno)})\n` +
+      `    code: ${err.code}\n` +
+      `    at ${from}`
+    )
+  }
+
   [inspect.custom]() {
     let stringify = (s: string, c: ChalkInstance) =>
       s.length === 0 ? "''" : c(inspect(s))
@@ -433,10 +551,10 @@ export class ProcessOutput extends Error {
   stderr: ${stringify(this.stderr, chalk.red)},
   signal: ${inspect(this.signal)},
   exitCode: ${(this.exitCode === 0 ? chalk.green : chalk.red)(this.exitCode)}${
-      exitCodeInfo(this.exitCode)
-        ? chalk.grey(' (' + exitCodeInfo(this.exitCode) + ')')
-        : ''
-    }
+    exitCodeInfo(this.exitCode)
+      ? chalk.grey(' (' + exitCodeInfo(this.exitCode) + ')')
+      : ''
+  }
 }`
   }
 }
@@ -451,12 +569,24 @@ function syncCwd() {
 
 export function cd(dir: string | ProcessOutput) {
   if (dir instanceof ProcessOutput) {
-    dir = dir.toString().replace(/\n+$/, '')
+    dir = dir.toString().trim()
   }
 
   $.log({ kind: 'cd', dir })
   process.chdir(dir)
   $[processCwd] = process.cwd()
+}
+
+export async function kill(pid: number, signal?: string) {
+  let children = await ps.tree({ pid, recursive: true })
+  for (const p of children) {
+    try {
+      process.kill(+p.pid, signal)
+    } catch (e) {}
+  }
+  try {
+    process.kill(-pid, signal)
+  } catch (e) {}
 }
 
 export type LogEntry =

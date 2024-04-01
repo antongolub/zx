@@ -1,4 +1,4 @@
-// Copyright 2022 Google LLC
+// Copyright 2024 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,11 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { describe, before } from 'node:test'
+import assert from 'node:assert'
+import { test, describe } from 'bun:test'
 import '../build/globals.js'
 
-describe('experimental', () => {
-  before(() => {
-    $.verbose = false
+describe('bun', () => {
+  test('smoke test', async () => {
+    const p = await $`echo foo`
+    assert.match(p.stdout, /foo/)
+  })
+
+  test('captures err stack', async () => {
+    const p = await $({ nothrow: true })`echo foo; exit 3`
+    assert.match(p.message, /exit code: 3/)
   })
 })

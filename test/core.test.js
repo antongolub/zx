@@ -13,18 +13,15 @@
 // limitations under the License.
 
 import assert from 'node:assert'
-import { test, describe, beforeEach } from 'node:test'
+import { test, describe } from 'node:test'
 import { inspect } from 'node:util'
-import { Writable } from 'node:stream'
+import { basename } from 'node:path'
+import { Readable, Writable } from 'node:stream'
 import { Socket } from 'node:net'
 import { ProcessPromise, ProcessOutput } from '../build/index.js'
 import '../build/globals.js'
 
 describe('core', () => {
-  beforeEach(() => {
-    $.verbose = false
-  })
-
   test('only stdout is used during command substitution', async () => {
     let hello = await $`echo Error >&2; echo Hello`
     let len = +(await $`echo ${hello} | wc -c`)
@@ -50,6 +47,28 @@ describe('core', () => {
   test('undefined and empty string correctly quoted', async () => {
     assert.equal((await $`echo -n ${undefined}`).toString(), 'undefined')
     assert.equal((await $`echo -n ${''}`).toString(), '')
+  })
+
+  test('handles multiline literals', async () => {
+    assert.equal(
+      (
+        await $`echo foo
+     bar
+     "baz
+      qux"
+`
+      ).toString(),
+      'foo bar baz\n      qux\n'
+    )
+    assert.equal(
+      (
+        await $`echo foo \
+                     bar \
+                     baz \
+`
+      ).toString(),
+      'foo bar baz\n'
+    )
   })
 
   test('can create a dir with a space in the name', async () => {
@@ -106,6 +125,34 @@ describe('core', () => {
     }
   })
 
+  test('handles `input` option', async () => {
+    const p1 = $({ input: 'foo' })`cat`
+    const p2 = $({ input: Readable.from('bar') })`cat`
+    const p3 = $({ input: Buffer.from('baz') })`cat`
+    const p4 = $({ input: p3 })`cat`
+    const p5 = $({ input: await p3 })`cat`
+
+    assert.equal((await p1).stdout, 'foo')
+    assert.equal((await p2).stdout, 'bar')
+    assert.equal((await p3).stdout, 'baz')
+    assert.equal((await p4).stdout, 'baz')
+    assert.equal((await p5).stdout, 'baz')
+  })
+
+  test('requires $.shell to be specified', async () => {
+    await within(() => {
+      $.shell = undefined
+      assert.throws(() => $`echo foo`, /shell/)
+    })
+  })
+
+  test('`$.sync()` provides synchronous API', () => {
+    const o1 = $.sync`echo foo`
+    const o2 = $({ sync: true })`echo foo`
+    assert.equal(o1.stdout, 'foo\n')
+    assert.equal(o2.stdout, 'foo\n')
+  })
+
   test('pipes are working', async () => {
     let { stdout } = await $`echo "hello"`
       .pipe($`awk '{print $1" world"}'`)
@@ -122,6 +169,11 @@ describe('core', () => {
     } finally {
       await fs.rm('/tmp/output.txt')
     }
+  })
+
+  test('provides presets', async () => {
+    const $$ = $({ nothrow: true })
+    assert.equal((await $$`exit 1`).exitCode, 1)
   })
 
   test('ProcessPromise', async () => {
@@ -167,6 +219,17 @@ describe('core', () => {
     assert.ok(p2 !== p3)
     assert.ok(p3 !== p4)
     assert.ok(p5 !== p1)
+  })
+
+  test('ProcessPromise: implements toString()', async () => {
+    const p = $`echo foo`
+    assert.equal((await p).toString(), 'foo\n')
+  })
+
+  test('ProcessPromise: implements valueOf()', async () => {
+    const p = $`echo foo`
+    assert.equal((await p).valueOf(), 'foo')
+    assert.ok((await p) == 'foo')
   })
 
   test('cd() works with relative paths', async () => {
@@ -242,11 +305,39 @@ describe('core', () => {
   })
 
   test('cd() accepts ProcessOutput in addition to string', async () => {
-    within(async () => {
+    await within(async () => {
       const tmpDir = await $`mktemp -d`
       cd(tmpDir)
-      assert.equal(process.cwd(), tmpDir.toString().trimEnd())
+      assert.equal(
+        basename(process.cwd()),
+        basename(tmpDir.toString().trimEnd())
+      )
     })
+  })
+
+  test('abort() method works', async () => {
+    const p = $`sleep 9999`
+    setTimeout(() => p.abort(), 100)
+
+    try {
+      await p
+      assert.unreachable('should have thrown')
+    } catch ({ message }) {
+      assert.match(message, /The operation was aborted/)
+    }
+  })
+
+  test('accepts optional AbortController', async () => {
+    const ac = new AbortController()
+    const p = $({ ac })`sleep 9999`
+    setTimeout(() => ac.abort(), 100)
+
+    try {
+      await p
+      assert.unreachable('should have thrown')
+    } catch ({ message }) {
+      assert.match(message, /The operation was aborted/)
+    }
   })
 
   test('kill() method works', async () => {
@@ -278,7 +369,6 @@ describe('core', () => {
       resolve()
     }
 
-    $.verbose = false
     assert.equal($.verbose, false)
 
     within(() => {
@@ -302,7 +392,6 @@ describe('core', () => {
     let pwd = await $`pwd`
 
     within(async () => {
-      $.verbose = false
       cd('/tmp')
       setTimeout(async () => {
         assert.ok((await $`pwd`).stdout.trim().endsWith('/tmp'))

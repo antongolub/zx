@@ -13,9 +13,6 @@
       "globals": [
         "./build/globals.d.ts"
       ],
-      "experimental": [
-        "./build/experimental.d.ts"
-      ],
       "cli": [
         "./build/cli.d.ts"
       ],
@@ -27,7 +24,6 @@
   "exports": {
     ".": "./build/index.js",
     "./globals": "./build/globals.js",
-    "./experimental": "./build/experimental.js",
     "./cli": "./build/cli.js",
     "./core": "./build/core.js",
     "./package.json": "./package.json"
@@ -46,43 +42,43 @@
     "build:js": "node scripts/build-js.mjs --format=esm --entry=src/*.ts && npm run build:vendor",
     "build:vendor": "node scripts/build-js.mjs --format=esm --entry=src/vendor.ts --bundle=all --banner",
     "build:dts": "tsc --project tsconfig.prod.json && node scripts/build-dts.mjs",
-    "test": "npm run build && node ./test/all.test.js",
+    "test": "npm run build && npm run test:unit && npm run test:types",
+    "test:unit": "node ./test/all.test.js",
     "test:types": "tsd",
     "coverage": "c8 -x build/vendor.js -x 'test/**' -x scripts --check-coverage npm test",
-    "mutation": "stryker run",
     "circular": "madge --circular src/*",
     "version": "cat package.json | fx .version"
   },
   "optionalDependencies": {
     "@types/fs-extra": "^11.0.4",
-    "@types/node": ">=20.11.19"
+    "@types/node": ">=20.11.30"
   },
   "devDependencies": {
-    "@stryker-mutator/core": "^6.4.2",
     "@types/fs-extra": "^11.0.4",
     "@types/minimist": "^1.2.5",
-    "@types/node": ">=20.11.19",
-    "@types/ps-tree": "^1.1.6",
+    "@types/node": ">=20.11.30",
     "@types/which": "^3.0.3",
-    "c8": "^7.13.0",
+    "@webpod/ps": "^0.0.0-beta.2",
+    "@webpod/ingrid": "^0.0.0-beta.3",
+    "c8": "^9.1.0",
     "chalk": "^5.3.0",
+    "depseek": "^0.4.1",
     "dts-bundle-generator": "^9.3.1",
-    "esbuild": "^0.20.1",
+    "esbuild": "^0.20.2",
     "esbuild-node-externals": "^1.13.0",
-    "esbuild-plugin-entry-chunks": "^0.1.8",
+    "esbuild-plugin-entry-chunks": "^0.1.11",
     "fs-extra": "^11.2.0",
     "fx": "*",
     "globby": "^14.0.1",
     "madge": "^6.1.0",
     "minimist": "^1.2.8",
-    "node-fetch-native": "^1.6.2",
-    "prettier": "^2.8.8",
-    "ps-tree": "^1.2.0",
-    "tsd": "^0.28.1",
-    "typescript": "^5.0.4",
-    "webpod": "^0",
-    "which": "^3.0.0",
-    "yaml": "^2.3.4"
+    "node-fetch-native": "^1.6.4",
+    "prettier": "^3.2.5",
+    "tsd": "^0.30.7",
+    "typescript": "^5.4.3",
+    "which": "^4.0.0",
+    "yaml": "^2.4.1",
+    "zurk": "^0.0.32"
   },
   "publishConfig": {
     "registry": "https://wombat-dressing-room.appspot.com"
@@ -94,7 +90,8 @@
   "prettier": {
     "semi": false,
     "singleQuote": true,
-    "endOfLine": "lf"
+    "endOfLine": "lf",
+    "trailingComma": "es5"
   },
   "repository": "google/zx",
   "author": "Anton Medvedev <anton@medv.io>",
