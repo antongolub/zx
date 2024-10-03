@@ -55,6 +55,7 @@ import {
 const CWD = Symbol('processCwd')
 const SYNC = Symbol('syncExec')
 const EOL = Buffer.from(_EOL)
+const SIGTERM = 'SIGTERM'
 const storage = new AsyncLocalStorage<Options>()
 
 function getStore() {
@@ -113,8 +114,8 @@ export const defaults: Options = {
   spawnSync,
   log,
   kill,
-  killSignal: 'SIGTERM',
-  timeoutSignal: 'SIGTERM',
+  killSignal: SIGTERM,
+  timeoutSignal: SIGTERM,
 }
 
 export interface Shell {
@@ -377,6 +378,10 @@ export class ProcessPromise extends Promise<ProcessOutput> {
   }
 
   // Getters
+  get pid() {
+    return this.child?.pid
+  }
+
   get cmd() {
     return this._command
   }
