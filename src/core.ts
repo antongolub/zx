@@ -326,7 +326,6 @@ export class ProcessPromise extends Promise<ProcessOutput> {
     this._piped = true
     const { store, ee, fulfilled } = this._zurk as any
     const from = new VoidWritable()
-    const input = fulfilled ? fulfilled.stdout : from
     const fill = () => {
       for (const chunk of store.stdout) {
         from.write(chunk)
@@ -348,14 +347,12 @@ export class ProcessPromise extends Promise<ProcessOutput> {
     }
 
     if (dest instanceof ProcessPromise) {
-      from.pipe(dest.stdin)
       this.catch((e) => (dest.isNothrow() ? noop : dest._reject(e)))
-
+      from.pipe(dest.stdin)
       return dest
     }
 
     from.pipe(dest as Writable)
-
     return this
   }
 
