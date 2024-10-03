@@ -324,7 +324,7 @@ export class ProcessPromise extends Promise<ProcessOutput> {
       throw new Error('The pipe() method does not take strings. Forgot $?')
 
     this._piped = true
-    const { store, ee, fulfilled } = this._zurk as any
+    const { store, ee, fulfilled } = this._zurk!
     const from = new VoidWritable()
     const fill = () => {
       for (const chunk of store.stdout) {
@@ -464,11 +464,6 @@ export class ProcessPromise extends Promise<ProcessOutput> {
       )
       this.finally(() => clearTimeout(this._timeoutId)).catch(noop)
     }
-    return this
-  }
-
-  halt(): ProcessPromise {
-    this._halted = true
     return this
   }
 
