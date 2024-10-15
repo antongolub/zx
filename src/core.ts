@@ -142,7 +142,9 @@ export const $: Shell & Options = new Proxy<Shell & Options>(
       }
     }
     const from = getCallerLocation()
-    checkCmd(pieces as TemplateStringsArray, from)
+    if (pieces.some((p) => p == undefined))
+      throw new Error(`Malformed command at ${from}`)
+
     checkShell()
     checkQuote()
 

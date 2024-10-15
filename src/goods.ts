@@ -15,7 +15,7 @@
 import assert from 'node:assert'
 import { createInterface } from 'node:readline'
 import { $, within, ProcessOutput } from './core.js'
-import { type Duration, isString, parseDuration } from './util.js'
+import { type Duration, isStringLiteral, parseDuration } from './util.js'
 import {
   chalk,
   minimist,
@@ -27,10 +27,10 @@ import {
 export { default as path } from 'node:path'
 export * as os from 'node:os'
 
-export let argv = minimist(process.argv.slice(2))
+export const argv = minimist(process.argv.slice(2))
 export function updateArgv(args: string[]) {
-  argv = minimist(args)
-  ;(global as any).argv = argv
+  for (var k in argv) delete argv[k]
+  Object.assign(argv, minimist(args))
 }
 
 export function sleep(duration: Duration) {
@@ -46,18 +46,11 @@ export async function fetch(url: RequestInfo, init?: RequestInit) {
 
 export function echo(...args: any[]): void
 export function echo(pieces: TemplateStringsArray, ...args: any[]) {
-  let msg
   const lastIdx = pieces.length - 1
-  if (
-    Array.isArray(pieces) &&
-    pieces.every(isString) &&
-    lastIdx === args.length
-  ) {
-    msg =
-      args.map((a, i) => pieces[i] + stringify(a)).join('') + pieces[lastIdx]
-  } else {
-    msg = [pieces, ...args].map(stringify).join(' ')
-  }
+  const msg = isStringLiteral(pieces, ...args)
+    ? args.map((a, i) => pieces[i] + stringify(a)).join('') + pieces[lastIdx]
+    : [pieces, ...args].map(stringify).join(' ')
+
   console.log(msg)
 }
 
