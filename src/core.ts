@@ -289,20 +289,20 @@ export class ProcessPromise extends Promise<ProcessOutput> {
       ee: self._ee,
       run: (cb) => cb(),
       on: {
-        start: () => {
+        start() {
           self._timeout && self.timeout(self._timeout, self._timeoutSignal)
         },
-        stdout: (data) => {
+        stdout(data) {
           // If process is piped, don't print output.
           if (self._piped) return
           $.log({ kind: 'stdout', data, verbose: self.isVerbose() })
         },
-        stderr: (data) => {
+        stderr(data) {
           // Stderr should be printed regardless of piping.
           $.log({ kind: 'stderr', data, verbose: !self.isQuiet() })
         },
         // prettier-ignore
-        end: (data, c) => {
+        end(data, c) {
           self._resolved = true
           const { error, status, signal, duration, ctx } = data
           const { stdout, stderr, stdall } = ctx.store
@@ -471,8 +471,8 @@ export class ProcessPromise extends Promise<ProcessOutput> {
     return this
   }
 
-  nothrow(): ProcessPromise {
-    this._nothrow = true
+  nothrow(v = true): ProcessPromise {
+    this._nothrow = v
     return this
   }
 
@@ -871,11 +871,9 @@ const promisifyStream = <S extends Writable>(
       return new Promise((_res, _rej) =>
         stream
           .once('error', (e) => _rej(rej(e)))
-          .once('finish', () =>
-            _res(res(proxyOverride(stream, (from as any)._output)))
-          )
+          .once('finish', () => _res(res(proxyOverride(stream, from.output))))
           .once('end-piped-from', () =>
-            _res(res(proxyOverride(stream, (from as any)._output)))
+            _res(res(proxyOverride(stream, from.output)))
           )
       )
     },

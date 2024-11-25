@@ -487,7 +487,9 @@ describe('core', () => {
 
         test('$ > stdout', async () => {
           const p = $`echo 1`.pipe(process.stdout)
+          const o = await p
           assert.deepEqual(p, process.stdout)
+          assert.equal(o.stdout, '1\n')
         })
 
         test('$ halted > stream', async () => {
@@ -742,6 +744,14 @@ describe('core', () => {
         // Deprecated.
         const { exitCode } = await nothrow($`exit 42`)
         assert.equal(exitCode, 42)
+      }
+    })
+
+    test('nothrow(false) disables the option', async () => {
+      try {
+        await $({ nothrow: true })`exit 42`.nothrow(false)
+      } catch (e) {
+        assert.equal(e.exitCode, 42)
       }
     })
 
