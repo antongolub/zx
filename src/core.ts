@@ -70,7 +70,15 @@ export { default as path } from 'node:path'
 export * as os from 'node:os'
 export { log, type LogEntry } from './log.ts'
 export { chalk, which, ps } from './vendor-core.ts'
-export { quote, quotePowerShell } from './util.ts'
+export {
+  type Duration,
+  quote,
+  quotePowerShell,
+  tempdir,
+  tempdir as tmpdir,
+  tempfile,
+  tempfile as tmpfile,
+} from './util.ts'
 
 const CWD = Symbol('processCwd')
 const SYNC = Symbol('syncExec')

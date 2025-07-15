@@ -30,6 +30,10 @@ __export(core_exports, {
   quotePowerShell: () => import_util2.quotePowerShell,
   resolveDefaults: () => resolveDefaults,
   syncProcessCwd: () => syncProcessCwd,
+  tempdir: () => import_util2.tempdir,
+  tempfile: () => import_util2.tempfile,
+  tmpdir: () => import_util2.tempdir,
+  tmpfile: () => import_util2.tempfile,
   useBash: () => useBash,
   usePowerShell: () => usePowerShell,
   usePwsh: () => usePwsh,
@@ -380,6 +384,7 @@ function formatCmd(cmd) {
 }
 
 // src/core.ts
+var child_process = __toESM(require("child_process"), 1);
 var import_node_path = __toESM(require("path"), 1);
 var os = __toESM(require("os"), 1);
 var import_vendor_core3 = require("./vendor-core.cjs");
@@ -1011,14 +1016,7 @@ function cd(dir) {
 function kill(_0) {
   return __async(this, arguments, function* (pid, signal = $.killSignal) {
     if (import_node_process2.default.platform === "win32" && (yield new Promise((resolve) => {
-      (0, import_vendor_core2.exec)({
-        cmd: `taskkill /pid ${pid} /t /f`,
-        on: {
-          end({ error }) {
-            resolve(!error);
-          }
-        }
-      });
+      child_process.exec(`taskkill /pid ${pid} /t /f`, (err) => resolve(!err));
     })))
       return;
     for (const p of yield import_vendor_core2.ps.tree({ pid, recursive: true })) {
@@ -1086,6 +1084,10 @@ function resolveDefaults(defs = defaults, prefix = ENV_PREFIX, env = import_node
   quotePowerShell,
   resolveDefaults,
   syncProcessCwd,
+  tempdir,
+  tempfile,
+  tmpdir,
+  tmpfile,
   useBash,
   usePowerShell,
   usePwsh,

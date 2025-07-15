@@ -34,16 +34,10 @@ __export(index_exports, {
   parseArgv: () => parseArgv,
   question: () => question,
   quiet: () => quiet,
-  quote: () => import_util2.quote,
-  quotePowerShell: () => import_util2.quotePowerShell,
   retry: () => retry,
   sleep: () => sleep,
   spinner: () => spinner,
   stdin: () => stdin,
-  tempdir: () => import_util2.tempdir,
-  tempfile: () => import_util2.tempfile,
-  tmpdir: () => import_util2.tempdir,
-  tmpfile: () => import_util2.tempfile,
   updateArgv: () => updateArgv,
   version: () => version
 });
@@ -236,7 +230,6 @@ function spinner(title, callback) {
 
 // src/index.ts
 var import_vendor3 = require("./vendor.cjs");
-var import_util2 = require("./util.cjs");
 var import_meta = {};
 var _a;
 var VERSION = ((_a = import_vendor2.fs.readJsonSync(new URL("../package.json", import_meta_url), {
@@ -267,16 +260,10 @@ function quiet(promise) {
   parseArgv,
   question,
   quiet,
-  quote,
-  quotePowerShell,
   retry,
   sleep,
   spinner,
   stdin,
-  tempdir,
-  tempfile,
-  tmpdir,
-  tmpfile,
   updateArgv,
   version,
   ...require("./core.cjs")
