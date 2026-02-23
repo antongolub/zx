@@ -5,7 +5,7 @@ Combine `ts`, `js`, `bash` sections to produce a single zx scenario. For example
 
 ````text
 # Some script
-`ls` — is an unix command to get directory contents. Let's see how to use it in `zx`:
+`ls` — is a unix command to get directory contents. Let's see how to use it in `zx`:
 
 ```js
 // ts, js, cjs, mjs, etc
@@ -23,7 +23,7 @@ ls -l
 And how it looks like:
 
 > # Some script
-> `ls` — is an unix command to get directory contents. Let's see how to use it in `zx`:
+> `ls` — is a unix command to get directory contents. Let's see how to use it in `zx`:
 > ```js
 > // ts, js, cjs, mjs, etc
 > const {stdout} = await $`ls -l`

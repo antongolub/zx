@@ -7,7 +7,7 @@ const p = $`command` // ProcessPromise
 const o = await p    // ProcessOutput
 ```
 
-By default, `$` spawns a new process immediately, but you can delay the start to trigger in manually.
+By default, `$` spawns a new process immediately, but you can delay the start to trigger it manually.
 
 ```ts
 const p = $({halt: true})`command`

@@ -212,7 +212,7 @@ We also check compatibility with all the target [runtimes x OS variants](https:/
 }
 ```
 
-CJS and EMS exports are verified separately.
+CJS and ESM exports are verified separately.
 ```json
 {
   "test:smoke:cjs": "node ./test/smoke/node.test.cjs",

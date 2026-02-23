@@ -1,6 +1,6 @@
 # Contribution Guide
 
-zx is a fully [open-source project](https://github.com/google/zx), which is developing by the community for the community. 
+zx is a fully [open-source project](https://github.com/google/zx), which is being developed by the community for the community.
 We welcome contributions of any kind, including but not limited to:
 * Bug reports
 * Feature requests
