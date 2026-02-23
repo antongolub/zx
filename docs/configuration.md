@@ -117,7 +117,7 @@ $.log = (entry: LogEntry) => {
 }
 ```
 
-The log mostly acts like a debugger, so by default it uses `process.error` for output.
+The log mostly acts like a debugger, so by default it uses `process.stderr` for output.
 Override the `$.log.output` to change the stream.
 
 ```ts

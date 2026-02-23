@@ -81,8 +81,8 @@ Please check the download sources carefully. Official links:
 * [JSR](https://jsr.io/@webpod/zx)
 * [Homebrew](https://github.com/Homebrew/homebrew-core/blob/master/Formula/z/zx.rb)
 
-### Github
-To fetch zx directly from the GitHub:
+### GitHub
+To fetch zx directly from GitHub:
 ```bash
 # Install via git
 npm i google/zx
