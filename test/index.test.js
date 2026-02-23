@@ -15,15 +15,24 @@
 import assert from 'node:assert'
 import { describe, test } from 'node:test'
 import {
+  bus,
   nothrow,
   quiet,
+  versions,
+  version,
+  VERSION,
   $,
   log,
   cd,
+  syncProcessCwd,
+  usePowerShell,
+  usePwsh,
+  useBash,
   kill,
   ProcessOutput,
   ProcessPromise,
   defaults,
+  dotenv,
   minimist,
   chalk,
   fs,
@@ -33,8 +42,9 @@ import {
   quote,
   quotePowerShell,
   within,
-  argv,
   os,
+  argv,
+  parseArgv,
   updateArgv,
   globby,
   glob,
@@ -47,6 +57,10 @@ import {
   expBackoff,
   spinner,
   path,
+  tempdir,
+  tempfile,
+  tmpdir,
+  tmpfile,
 } from '../build/index.js'
 
 describe('index', () => {
@@ -54,20 +68,28 @@ describe('index', () => {
     // index
     assert(nothrow)
     assert(quiet)
+    assert(version)
+    assert(versions)
+    assert.equal(version, VERSION)
 
     // core
     assert($)
     assert(ProcessOutput)
     assert(ProcessPromise)
     assert(cd)
+    assert(syncProcessCwd)
     assert(log)
     assert(kill)
     assert(defaults)
     assert(within)
+    assert(usePowerShell)
+    assert(usePwsh)
+    assert(useBash)
 
     // goods
-    assert(argv)
     assert(os)
+    assert(argv)
+    assert(parseArgv)
     assert(updateArgv)
     assert(globby)
     assert(glob)
@@ -88,9 +110,18 @@ describe('index', () => {
     assert(which)
     assert(YAML)
     assert(ps)
+    assert(dotenv)
 
     // utils
     assert(quote)
     assert(quotePowerShell)
+    assert(tempdir)
+    assert(tmpdir)
+    assert(tmpfile)
+    assert(tempfile)
+  })
+
+  test('bus is locked', () => {
+    assert.throws(() => bus.wrap('test', () => {}), /locked/)
   })
 })

@@ -14,48 +14,68 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import fs from 'fs/promises'
+import fs from 'node:fs/promises'
 import { generateDtsBundle } from 'dts-bundle-generator'
 import glob from 'fast-glob'
 
-const entry = {
-  filePath: './src/vendor.ts',
-  outFile: './build/vendor.d.ts',
-  libraries: {
-    allowedTypesLibraries: ['node'], // args['external-types'],
-    inlinedLibraries: [
-      '@nodelib/fs.stat',
-      '@nodelib/fs.scandir',
-      '@nodelib/fs.walk',
-      'fast-glob',
-      '@types/jsonfile',
-      'node-fetch-native',
-      'chalk',
-      'globby',
-      '@types/minimist',
-      '@types/which',
-      'zurk',
-      '@webpod/ps',
-      'depseek',
-    ], // args['external-inlines'],
-  },
-  output: {
-    inlineDeclareExternals: true,
-    inlineDeclareGlobals: true,
-    sortNodes: false,
-    exportReferencedTypes: false, //args['export-referenced-types'],
-  },
+const output = {
+  inlineDeclareExternals: true,
+  inlineDeclareGlobals: true,
+  sortNodes: false,
+  exportReferencedTypes: false, //args['export-referenced-types'],
 }
+const entries = [
+  {
+    filePath: './src/vendor-extra.ts',
+    outFile: './build/vendor-extra.d.ts',
+    libraries: {
+      allowedTypesLibraries: ['node'], // args['external-types'],
+      inlinedLibraries: [
+        '@nodelib/fs.stat',
+        '@nodelib/fs.scandir',
+        '@nodelib/fs.walk',
+        'fast-glob',
+        '@types/jsonfile',
+        'node-fetch-native',
+        // 'chalk',
+        'globby',
+        '@types/minimist',
+        // '@types/which',
+        // 'zurk',
+        // '@webpod/ps',
+        '@webpod/ingrid',
+        'depseek',
+        'envapi',
+        'maml.js',
+      ], // args['external-inlines'],
+    },
+    output,
+  },
+  {
+    filePath: './src/vendor-core.ts',
+    outFile: './build/vendor-core.d.ts',
+    libraries: {
+      allowedTypesLibraries: ['node'], // args['external-types'],
+      inlinedLibraries: [
+        '@types/which',
+        '@webpod/ps',
+        '@webpod/ingrid',
+        'chalk',
+        'zurk',
+      ], // args['external-inlines'],
+    },
+    output,
+  },
+]
 
 const compilationOptions = {
-  preferredConfigPath: './tsconfig.prod.json', // args.project,
+  preferredConfigPath: './tsconfig.json', // args.project,
   followSymlinks: true,
 }
 
-let [result] = generateDtsBundle([entry], compilationOptions)
-
-// generateDtsBundle cannot handle the circular refs on types inlining, so we need to help it manually:
-/*
+const results = generateDtsBundle(entries, compilationOptions)
+  // generateDtsBundle cannot handle the circular refs on types inlining, so we need to help it manually:
+  /*
 build/vendor.d.ts(163,7): error TS2456: Type alias 'Options' circularly references itself.
 build/vendor.d.ts(164,7): error TS2456: Type alias 'Entry' circularly references itself.
 build/vendor.d.ts(165,7): error TS2456: Type alias 'Task' circularly references itself.
@@ -64,21 +84,37 @@ build/vendor.d.ts(167,7): error TS2456: Type alias 'FileSystemAdapter' circularl
 build/vendor.d.ts(197,48): error TS2694: Namespace 'FastGlob' has no exported member 'FastGlobOptions
  */
 
-result = result
-  .replace('type Options = Options;', 'export {Options};')
-  .replace('type Task = Task;', 'export {Task};')
-  .replace('type Pattern = Pattern;', 'export {Pattern};')
-  .replace('FastGlob.FastGlobOptions', 'FastGlob.Options')
-  .replace('type Entry =', 'export type Entry =')
+  .map((r) =>
+    r
+      .replace('type Options = Options;', 'export {Options};')
+      .replace('type Task = Task;', 'export {Task};')
+      .replace('type Pattern = Pattern;', 'export {Pattern};')
+      .replace('FastGlob.FastGlobOptions', 'FastGlob.Options')
+      .replace('type Entry =', 'export type Entry =')
+  )
 
-await fs.writeFile(entry.outFile, result, 'utf8')
+for (const i in results) {
+  const entry = entries[i]
+  const result = results[i]
 
-// Replaces redundant triple-slash directives
-for (const dts of await glob(['build/**/*.d.ts', '!build/vendor.d.ts'])) {
-  const contents = (await fs.readFile(dts, 'utf8'))
-    .split('\n')
-    .filter((line) => !line.startsWith('/// <reference types'))
-    .join('\n')
+  await fs.writeFile(entry.outFile, result, 'utf8')
+}
+
+// Properly formats triple-slash directives
+const pkgEntries = ['core', 'index', 'vendor']
+const prefix = `/// <reference types="node" />
+/// <reference types="fs-extra" />
+
+`
+
+for (const dts of await glob(['build/**/*.d.ts', '!build/vendor-*.d.ts'])) {
+  const contents =
+    (pkgEntries.some((e) => dts.includes(e)) ? prefix : '') +
+    (await fs.readFile(dts, 'utf8'))
+      .replaceAll(".ts';", ".js';")
+      .split('\n')
+      .filter((line) => !line.startsWith('/// <reference types'))
+      .join('\n')
 
   await fs.writeFile(dts, contents, 'utf8')
 }

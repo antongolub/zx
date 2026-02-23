@@ -13,25 +13,40 @@
 // limitations under the License.
 
 import assert from 'node:assert'
-import { test, describe, beforeEach } from 'node:test'
-import '../build/globals.js'
+import { test, describe, before, after } from 'node:test'
+import { fileURLToPath } from 'node:url'
+import net from 'node:net'
+import getPort from 'get-port'
+import { $, path, tmpfile, tmpdir, fs } from '../build/index.js'
+import { isMain, normalizeExt } from '../build/cli.js'
+import { fakeServer } from './fixtures/server.mjs'
+
+const __filename = fileURLToPath(import.meta.url)
+const spawn = $.spawn
+const nodeMajor = +process.versions?.node?.split('.')[0]
+const test22 = nodeMajor >= 22 ? test : test.skip
 
 describe('cli', () => {
-  // Helps detect unresolved ProcessPromise.
-  let promiseResolved = false
-
-  beforeEach(() => {
+  // Helps to detect unresolved ProcessPromise.
+  before(() => {
+    const spawned = []
+    $.spawn = (...args) => {
+      const proc = spawn(...args)
+      const done = () => (proc._done = true)
+      spawned.push(proc)
+      return proc.once('close', done).once('error', done)
+    }
     process.on('exit', () => {
-      if (!promiseResolved) {
+      if (spawned.some((p) => p._done !== true)) {
         console.error('Error: ProcessPromise never resolved.')
         process.exitCode = 1
       }
     })
   })
+  after(() => ($.spawn = spawn))
 
   test('promise resolved', async () => {
     await $`echo`
-    promiseResolved = true
   })
 
   test('prints version', async () => {
@@ -39,76 +54,250 @@ describe('cli', () => {
   })
 
   test('prints help', async () => {
-    let p = $`node build/cli.js -h`
+    const p = $`node build/cli.js -h`
     p.stdin.end()
-    let help = await p
+    const help = await p
     assert.match(help.stdout, /zx/)
   })
 
-  test('zx prints usage', async () => {
-    let p = $`node build/cli.js`
+  test('zx prints usage if no param passed', async () => {
+    const p = $`node build/cli.js`
     p.stdin.end()
-    let out = await p
-    assert.match(out.stdout, /A tool for writing better scripts/)
+    try {
+      await p
+      assert.fail('must throw')
+    } catch (out) {
+      assert.match(out.stdout, /A tool for writing better scripts/)
+      assert.equal(out.exitCode, 1)
+    }
   })
 
   test('starts repl with --repl', async () => {
-    let p = $`node build/cli.js --repl`
+    const p = $`node build/cli.js --repl`
     p.stdin.write('await $`echo f"o"o`\n')
     p.stdin.write('"b"+"ar"\n')
     p.stdin.end()
-    let out = await p
+    const out = await p
     assert.match(out.stdout, /foo/)
     assert.match(out.stdout, /bar/)
   })
 
   test('starts repl with verbosity off', async () => {
-    let p = $`node build/cli.js --repl`
+    const p = $`node build/cli.js --repl`
     p.stdin.write('"verbose" + " is " + $.verbose\n')
     p.stdin.end()
-    let out = await p
+    const out = await p
     assert.match(out.stdout, /verbose is false/)
   })
 
   test('supports `--quiet` flag', async () => {
-    let p = await $`node build/cli.js --quiet test/fixtures/markdown.md`
+    const p = await $`node build/cli.js --quiet test/fixtures/markdown.md`
     assert.ok(!p.stderr.includes('ignore'), 'ignore was printed')
     assert.ok(!p.stderr.includes('hello'), 'no hello')
     assert.ok(p.stdout.includes('world'), 'no world')
   })
 
   test('supports `--shell` flag ', async () => {
-    let shell = $.shell
-    let p =
+    const shell = $.shell
+    const p =
       await $`node build/cli.js --verbose --shell=${shell} <<< '$\`echo \${$.shell}\`'`
     assert.ok(p.stderr.includes(shell))
   })
 
   test('supports `--prefix` flag ', async () => {
-    let prefix = 'set -e;'
-    let p =
+    const prefix = 'set -e;'
+    const p =
       await $`node build/cli.js --verbose --prefix=${prefix} <<< '$\`echo \${$.prefix}\`'`
     assert.ok(p.stderr.includes(prefix))
   })
 
   test('supports `--postfix` flag ', async () => {
-    let postfix = '; exit 0'
-    let p =
+    const postfix = '; exit 0'
+    const p =
       await $`node build/cli.js --verbose --postfix=${postfix} <<< '$\`echo \${$.postfix}\`'`
     assert.ok(p.stderr.includes(postfix))
   })
 
-  test('scripts from https', async () => {
-    $`cat ${path.resolve('test/fixtures/echo.http')} | nc -l 8080`
-    let out =
-      await $`node build/cli.js --verbose http://127.0.0.1:8080/echo.mjs`
-    assert.match(out.stderr, /test/)
+  test('supports `--cwd` option ', async () => {
+    const cwd = path.resolve(fileURLToPath(import.meta.url), '../../temp')
+    fs.mkdirSync(cwd, { recursive: true })
+    const p =
+      await $`node build/cli.js --verbose --cwd=${cwd} <<< '$\`echo \${$.cwd}\`'`
+    assert.ok(p.stderr.endsWith(cwd + '\n'))
   })
 
-  test('scripts from https not ok', async () => {
-    $`echo $'HTTP/1.1 500\n\n' | nc -l 8081`
-    let out = await $`node build/cli.js http://127.0.0.1:8081`.nothrow()
+  test('supports `--env` option', async () => {
+    const env = tmpfile(
+      '.env',
+      `FOO=BAR
+      BAR=FOO+`
+    )
+    const file = `
+    console.log((await $\`echo $FOO\`).stdout);
+    console.log((await $\`echo $BAR\`).stdout)
+    `
+
+    const out = await $`node build/cli.js --env=${env} <<< ${file}`
+    fs.remove(env)
+    assert.equal(out.stdout, 'BAR\n\nFOO+\n\n')
+  })
+
+  test('supports `--env` and `--cwd` options with file', async () => {
+    const env = tmpfile(
+      '.env',
+      `FOO=BAR
+      BAR=FOO+`
+    )
+    const dir = tmpdir()
+    const file = `
+      console.log((await $\`echo $FOO\`).stdout);
+      console.log((await $\`echo $BAR\`).stdout)
+      `
+
+    const out =
+      await $`node build/cli.js --cwd=${dir} --env=${env}  <<< ${file}`
+    fs.remove(env)
+    fs.remove(dir)
+    assert.equal(out.stdout, 'BAR\n\nFOO+\n\n')
+  })
+
+  test('supports handling errors with the `--env` option', async () => {
+    const file = `
+      console.log((await $\`echo $FOO\`).stdout);
+      console.log((await $\`echo $BAR\`).stdout)
+      `
+    try {
+      await $`node build/cli.js --env=./env <<< ${file}`
+      fs.remove(env)
+      assert.throw()
+    } catch (e) {
+      assert.equal(e.exitCode, 1)
+    }
+  })
+
+  describe('`--prefer-local`', () => {
+    const pkgIndex = `export const a = 'AAA'`
+    const pkgJson = {
+      name: 'a',
+      version: '1.0.0',
+      type: 'module',
+      exports: './index.js',
+    }
+    const script = `
+import {a} from 'a'
+console.log(a);
+`
+
+    test('true', async () => {
+      const cwd = tmpdir()
+      await fs.outputFile(path.join(cwd, 'node_modules/a/index.js'), pkgIndex)
+      await fs.outputJson(
+        path.join(cwd, 'node_modules/a/package.json'),
+        pkgJson
+      )
+
+      const out =
+        await $`node build/cli.js --cwd=${cwd} --prefer-local=true --test <<< ${script}`
+      assert.equal(out.stdout, 'AAA\n')
+      assert.ok(await fs.exists(path.join(cwd, 'node_modules/a/index.js')))
+    })
+
+    test('external dir', async () => {
+      const cwd = tmpdir()
+      const external = tmpdir()
+      await fs.outputFile(
+        path.join(external, 'node_modules/a/index.js'),
+        pkgIndex
+      )
+      await fs.outputJson(
+        path.join(external, 'node_modules/a/package.json'),
+        pkgJson
+      )
+
+      const out =
+        await $`node build/cli.js --cwd=${cwd} --prefer-local=${external} --test <<< ${script}`
+      assert.equal(out.stdout, 'AAA\n')
+      assert.ok(await fs.exists(path.join(external, 'node_modules/a/index.js')))
+    })
+
+    test('external alias', async () => {
+      const cwd = tmpdir()
+      const external = tmpdir()
+      await fs.outputFile(
+        path.join(external, 'node_modules/a/index.js'),
+        pkgIndex
+      )
+      await fs.outputJson(
+        path.join(external, 'node_modules/a/package.json'),
+        pkgJson
+      )
+      await fs.symlinkSync(
+        path.join(external, 'node_modules'),
+        path.join(cwd, 'node_modules'),
+        'junction'
+      )
+
+      const out =
+        await $`node build/cli.js --cwd=${cwd} --prefer-local=true --test <<< ${script}`
+      assert.equal(out.stdout, 'AAA\n')
+      assert.ok(await fs.exists(path.join(cwd, 'node_modules')))
+    })
+
+    test('throws if exists', async () => {
+      const cwd = tmpdir()
+      const external = tmpdir()
+      await fs.outputFile(path.join(cwd, 'node_modules/a/index.js'), pkgIndex)
+      await fs.outputFile(
+        path.join(external, 'node_modules/a/index.js'),
+        pkgIndex
+      )
+      assert.rejects(
+        () =>
+          $`node build/cli.js --cwd=${cwd} --prefer-local=${external} --test <<< ${script}`,
+        /node_modules already exists/
+      )
+    })
+
+    test('throws if not dir', async () => {
+      const cwd = tmpdir()
+      const external = tmpdir()
+      await fs.outputFile(path.join(external, 'node_modules'), pkgIndex)
+      assert.rejects(
+        () =>
+          $`node build/cli.js --cwd=${cwd} --prefer-local=${external} --test <<< ${script}`,
+        /node_modules doesn't exist or is not a directory/
+      )
+    })
+  })
+
+  test('scripts from https 200', async () => {
+    const resp = await fs.readFile(path.resolve('test/fixtures/echo.http'))
+    const port = await getPort()
+    const server = await fakeServer([resp]).start(port)
+    const out =
+      await $`node build/cli.js --verbose http://127.0.0.1:${port}/script.mjs`
+    assert.match(out.stderr, /test/)
+    await server.stop()
+  })
+
+  test('scripts from https 500', async () => {
+    const port = await getPort()
+    const server = await fakeServer([`HTTP/1.1 500\n\n500\n`]).listen(port)
+    const out = await $`node build/cli.js http://127.0.0.1:${port}`.nothrow()
     assert.match(out.stderr, /Error: Can't get/)
+    assert.match(out.stderr, /Failed to fetch remote script/)
+    assert.equal(out.exitCode, 1)
+    await server.stop()
+  })
+
+  test('scripts (md) from https', async () => {
+    const resp = await fs.readFile(path.resolve('test/fixtures/md.http'))
+    const port = await getPort()
+    const server = await fakeServer([resp]).start(port)
+    const out =
+      await $`node build/cli.js --verbose http://127.0.0.1:${port}/script.md`
+    assert.match(out.stderr, /md/)
+    await server.stop()
   })
 
   test('scripts with no extension', async () => {
@@ -120,8 +309,25 @@ describe('cli', () => {
     )
   })
 
+  test('scripts with non standard extension', async () => {
+    const o =
+      await $`node build/cli.js --ext='.mjs' test/fixtures/non-std-ext.zx`
+    assert.ok(o.stdout.trim().endsWith('zx/test/fixtures/non-std-ext.zx.mjs'))
+
+    await assert.rejects(
+      $`node build/cli.js test/fixtures/non-std-ext.zx`,
+      /Unknown file extension "\.zx"/
+    )
+  })
+
+  test22('scripts from stdin with explicit extension', async () => {
+    const out =
+      await $`node --experimental-strip-types build/cli.js --ext='.ts' <<< 'const foo: string = "bar"; console.log(foo)'`
+    assert.match(out.stdout, /bar/)
+  })
+
   test('require() is working from stdin', async () => {
-    let out =
+    const out =
       await $`node build/cli.js <<< 'console.log(require("./package.json").name)'`
     assert.match(out.stdout, /zx/)
   })
@@ -138,14 +344,21 @@ describe('cli', () => {
     await $`node build/cli.js test/fixtures/markdown.md`
   })
 
-  test('markdown scripts are working', async () => {
-    await $`node build/cli.js test/fixtures/markdown.md`
+  test('markdown scripts are working for CRLF', async () => {
+    const p = await $`node build/cli.js test/fixtures/markdown-crlf.md`
+    assert.ok(p.stdout.includes('Hello, world!'))
+  })
+
+  test('markdown scripts from stdin with --ext .md', async () => {
+    const md = '# Test\n\n```js\necho("md-stdin-ok")\n```\n'
+    const p = await $`node build/cli.js --ext='.md' <<< ${md}`
+    assert.match(p.stdout, /md-stdin-ok/)
   })
 
   test('exceptions are caught', async () => {
-    let out1 = await $`node build/cli.js <<<${'await $`wtf`'}`.nothrow()
+    const out1 = await $`node build/cli.js <<<${'await $`wtf`'}`.nothrow()
+    const out2 = await $`node build/cli.js <<<'throw 42'`.nothrow()
     assert.match(out1.stderr, /Error:/)
-    let out2 = await $`node build/cli.js <<<'throw 42'`.nothrow()
     assert.match(out2.stderr, /42/)
   })
 
@@ -155,32 +368,31 @@ describe('cli', () => {
   })
 
   test('eval works with stdin', async () => {
-    let p = $`(printf foo; sleep 0.1; printf bar) | node build/cli.js --eval 'echo(await stdin())'`
+    const p = $`(printf foo; sleep 0.1; printf bar) | node build/cli.js --eval 'echo(await stdin())'`
     assert.equal((await p).stdout, 'foobar\n')
   })
 
   test('executes a script from $PATH', async () => {
     const isWindows = process.platform === 'win32'
     const oldPath = process.env.PATH
-
-    const envPathSeparator = isWindows ? ';' : ':'
-    process.env.PATH += envPathSeparator + path.resolve('/tmp/')
-
     const toPOSIXPath = (_path) => _path.split(path.sep).join(path.posix.sep)
 
     const zxPath = path.resolve('./build/cli.js')
     const zxLocation = isWindows ? toPOSIXPath(zxPath) : zxPath
     const scriptCode = `#!/usr/bin/env ${zxLocation}\nconsole.log('The script from path runs.')`
+    const scriptName = 'script-from-path'
+    const scriptFile = tmpfile(scriptName, scriptCode, 0o744)
+    const scriptDir = path.dirname(scriptFile)
+
+    const envPathSeparator = isWindows ? ';' : ':'
+    process.env.PATH += envPathSeparator + scriptDir
 
     try {
       await $`chmod +x ${zxLocation}`
-      await $`echo ${scriptCode}`.pipe(
-        fs.createWriteStream('/tmp/script-from-path', { mode: 0o744 })
-      )
-      await $`script-from-path`
+      await $`${scriptName}`
     } finally {
       process.env.PATH = oldPath
-      fs.rmSync('/tmp/script-from-path')
+      await fs.rm(scriptFile)
     }
   })
 
@@ -202,7 +414,42 @@ describe('cli', () => {
   })
 
   test('exit code can be set', async () => {
-    let p = await $`node build/cli.js test/fixtures/exit-code.mjs`.nothrow()
+    const p = await $`node build/cli.js test/fixtures/exit-code.mjs`.nothrow()
     assert.equal(p.exitCode, 42)
+  })
+
+  describe('internals', () => {
+    test('isMain() checks process entry point', () => {
+      assert.equal(isMain(import.meta.url, __filename), true)
+
+      assert.equal(
+        isMain(import.meta.url.replace('.js', '.cjs'), __filename),
+        true
+      )
+
+      try {
+        assert.equal(
+          isMain(
+            'file:///root/zx/test/cli.test.js',
+            '/root/zx/test/all.test.js'
+          ),
+          true
+        )
+        assert.throw()
+      } catch (e) {
+        assert.ok(['EACCES', 'ENOENT'].includes(e.code))
+      }
+    })
+
+    test('isMain() function is running from the wrong path', () => {
+      assert.equal(isMain('///root/zx/test/cli.test.js'), false)
+    })
+
+    test('normalizeExt()', () => {
+      assert.equal(normalizeExt('.ts'), '.ts')
+      assert.equal(normalizeExt('ts'), '.ts')
+      assert.equal(normalizeExt('.'), '.')
+      assert.equal(normalizeExt(), undefined)
+    })
   })
 })

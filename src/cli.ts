@@ -14,249 +14,285 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { createRequire } from 'node:module'
-import { basename, dirname, extname, join, resolve } from 'node:path'
 import url from 'node:url'
+import process from 'node:process'
 import {
   $,
   ProcessOutput,
+  parseArgv,
   updateArgv,
-  fetch,
+  resolveDefaults,
   chalk,
-  minimist,
+  dotenv,
+  fetch,
   fs,
-} from './index.js'
-import { randomId } from './util.js'
-import { installDeps, parseDeps } from './deps.js'
+  path,
+  stdin,
+  VERSION,
+  Fail,
+} from './index.ts'
+import { installDeps, parseDeps } from './deps.ts'
+import { startRepl } from './repl.ts'
+import { randomId } from './util.ts'
+import { transformMarkdown } from './md.ts'
+import { createRequire, type minimist } from './vendor.ts'
 
-function printUsage() {
+export { transformMarkdown } from './md.ts'
+
+const EXT = '.mjs'
+const EXT_RE = /^\.[mc]?[jt]sx?$/
+
+// prettier-ignore
+export const argv: minimist.ParsedArgs = parseArgv(process.argv.slice(2), {
+  default: resolveDefaults({ ['prefer-local']: false } as any, 'ZX_', process.env, new Set(['env', 'install', 'registry'])),
+  // exclude 'prefer-local' to let minimist infer the type
+  string: ['shell', 'prefix', 'postfix', 'eval', 'cwd', 'ext', 'registry', 'env'],
+  boolean: ['version', 'help', 'quiet', 'verbose', 'install', 'repl', 'experimental'],
+  alias: { e: 'eval', i: 'install', v: 'version', h: 'help', l: 'prefer-local', 'env-file': 'env' },
+  stopEarly: true,
+  parseBoolean: true,
+  camelCase: true,
+})
+
+autorun(import.meta)
+
+export function autorun(meta: ImportMeta): void {
+  if (meta && isMain(meta))
+    main().catch((err) => {
+      if (err instanceof ProcessOutput) {
+        console.error('Error:', err.message)
+      } else {
+        console.error(err)
+      }
+
+      process.exitCode = 1
+    })
+}
+
+export function printUsage() {
   // language=txt
   console.log(`
- ${chalk.bold('zx ' + getVersion())}
+ ${chalk.bold('zx ' + VERSION)}
    A tool for writing better scripts
 
  ${chalk.bold('Usage')}
    zx [options] <script>
 
  ${chalk.bold('Options')}
-   --quiet              don't echo commands
+   --quiet              suppress any outputs
+   --verbose            enable verbose mode
    --shell=<path>       custom shell binary
    --prefix=<command>   prefix all commands
    --postfix=<command>  postfix all commands
-   --eval=<js>, -e      evaluate script 
+   --prefer-local, -l   prefer locally installed packages and binaries
+   --cwd=<path>         set current directory
+   --eval=<js>, -e      evaluate script
+   --ext=<.mjs>         script extension
    --install, -i        install dependencies
+   --registry=<URL>     npm registry, defaults to https://registry.npmjs.org/
    --version, -v        print current zx version
    --help, -h           print help
    --repl               start repl
+   --env=<path>         path to env file
+   --experimental       enables experimental features (deprecated)
+
+ ${chalk.italic('Full documentation:')} ${chalk.underline(Fail.DOCS_URL)}
 `)
 }
 
-const argv = minimist(process.argv.slice(2), {
-  string: ['shell', 'prefix', 'postfix', 'eval'],
-  boolean: ['version', 'help', 'quiet', 'verbose', 'install', 'repl'],
-  alias: { e: 'eval', i: 'install', v: 'version', h: 'help' },
-  stopEarly: true,
-})
-
-await (async function main() {
-  const globals = './globals.js'
-  await import(globals)
-  if (argv.verbose) $.verbose = true
-  if (argv.quiet) $.verbose = false
-  if (argv.shell) $.shell = argv.shell
-  if (argv.prefix) $.prefix = argv.prefix
-  if (argv.postfix) $.postfix = argv.postfix
+export async function main(): Promise<void> {
   if (argv.version) {
-    console.log(getVersion())
+    console.log(VERSION)
     return
   }
   if (argv.help) {
     printUsage()
     return
   }
+  if (argv.cwd) $.cwd = argv.cwd
+  if (argv.env) {
+    const envfile = path.resolve($.cwd ?? process.cwd(), argv.env)
+    dotenv.config(envfile)
+    resolveDefaults()
+  }
+  if (argv.verbose) $.verbose = true
+  if (argv.quiet) $.quiet = true
+  if (argv.shell) $.shell = argv.shell
+  if (argv.prefix) $.prefix = argv.prefix
+  if (argv.postfix) $.postfix = argv.postfix
+  if (argv.preferLocal) $.preferLocal = argv.preferLocal
+
+  await import('zx/globals')
   if (argv.repl) {
-    await (await import('./repl.js')).startRepl()
+    await startRepl()
     return
   }
-  if (argv.eval) {
-    await runScript(argv.eval)
-    return
-  }
-  const firstArg = argv._[0]
-  updateArgv(argv._.slice(firstArg === undefined ? 0 : 1))
-  if (!firstArg || firstArg === '-') {
-    const success = await scriptFromStdin()
-    if (!success) printUsage()
-    return
-  }
-  if (/^https?:/.test(firstArg)) {
-    await scriptFromHttp(firstArg)
-    return
-  }
-  const filepath = firstArg.startsWith('file:///')
-    ? url.fileURLToPath(firstArg)
-    : resolve(firstArg)
-  await importPath(filepath)
-})().catch((err) => {
-  if (err instanceof ProcessOutput) {
-    console.error('Error:', err.message)
-  } else {
-    console.error(err)
-  }
-  process.exitCode = 1
-})
+  argv.ext = normalizeExt(argv.ext)
 
-async function runScript(script: string) {
-  const filepath = join(process.cwd(), `zx-${randomId()}.mjs`)
-  await writeAndImport(script, filepath)
+  const { script, scriptPath, tempPath } = await readScript()
+  await runScript(script, scriptPath, tempPath)
 }
 
-async function scriptFromStdin() {
+const rmrf = (p: string) => {
+  if (!p) return
+
+  lstat(p)?.isSymbolicLink()
+    ? fs.unlinkSync(p)
+    : fs.rmSync(p, { force: true, recursive: true })
+}
+async function runScript(
+  script: string,
+  scriptPath: string,
+  tempPath: string
+): Promise<void> {
+  let nmLink = ''
+  const rmTemp = () => {
+    rmrf(tempPath)
+    rmrf(nmLink)
+  }
+  try {
+    if (tempPath) {
+      scriptPath = tempPath
+      await fs.writeFile(tempPath, script)
+    }
+    const cwd = path.dirname(scriptPath)
+    if (typeof argv.preferLocal === 'string') {
+      nmLink = linkNodeModules(cwd, argv.preferLocal)
+    }
+    if (argv.install) {
+      await installDeps(parseDeps(script), cwd, argv.registry)
+    }
+
+    injectGlobalRequire(scriptPath)
+    process.once('exit', rmTemp)
+
+    // TODO: fix unanalyzable-dynamic-import to work correctly with jsr.io
+    await import(url.pathToFileURL(scriptPath).toString())
+  } finally {
+    rmTemp()
+  }
+}
+
+function linkNodeModules(cwd: string, external: string): string {
+  const nm = 'node_modules'
+  const alias = path.resolve(cwd, nm)
+  const target =
+    path.basename(external) === nm
+      ? path.resolve(external)
+      : path.resolve(external, nm)
+  const aliasStat = lstat(alias)
+  const targetStat = lstat(target)
+
+  if (!targetStat?.isDirectory())
+    throw new Fail(
+      `Can't link node_modules: ${target} doesn't exist or is not a directory`
+    )
+  if (aliasStat?.isDirectory() && alias !== target)
+    throw new Fail(`Can't link node_modules: ${alias} already exists`)
+  if (aliasStat) return ''
+
+  fs.symlinkSync(target, alias, 'junction')
+  return alias
+}
+
+function lstat(p: string) {
+  try {
+    return fs.lstatSync(p)
+  } catch {}
+}
+
+async function readScript() {
+  const [firstArg] = argv._
   let script = ''
-  if (!process.stdin.isTTY) {
-    process.stdin.setEncoding('utf8')
-    for await (const chunk of process.stdin) {
-      script += chunk
-    }
+  let scriptPath = ''
+  let tempPath = ''
+  let argSlice = 1
 
-    if (script.length > 0) {
-      await runScript(script)
-      return true
+  if (argv.eval) {
+    argSlice = 0
+    script = argv.eval
+    tempPath = getFilepath($.cwd, 'zx', argv.ext)
+  } else if (!firstArg || firstArg === '-') {
+    script = await readScriptFromStdin()
+    tempPath = getFilepath($.cwd, 'zx', argv.ext)
+    if (script.length === 0) {
+      printUsage()
+      process.exitCode = 1
+      throw new Fail('No script provided')
     }
+  } else if (/^https?:/.test(firstArg)) {
+    const { name, ext = argv.ext } = path.parse(new URL(firstArg).pathname)
+    script = await readScriptFromHttp(firstArg)
+    tempPath = getFilepath($.cwd, name, ext)
+  } else {
+    script = await fs.readFile(firstArg, 'utf8')
+    scriptPath = firstArg.startsWith('file:')
+      ? url.fileURLToPath(firstArg)
+      : path.resolve(firstArg)
   }
-  return false
+
+  const { ext, base, dir } = path.parse(tempPath || scriptPath)
+  if (ext === '' || (argv.ext && !EXT_RE.test(ext))) {
+    tempPath = getFilepath(dir, base)
+  }
+  if (ext === '.md') {
+    script = transformMarkdown(script)
+    tempPath = getFilepath(dir, base, EXT)
+  }
+  if (argSlice) updateArgv(argv._.slice(argSlice))
+
+  return { script, scriptPath, tempPath }
 }
 
-async function scriptFromHttp(remote: string) {
+async function readScriptFromStdin(): Promise<string> {
+  return process.stdin.isTTY ? '' : stdin()
+}
+
+async function readScriptFromHttp(remote: string): Promise<string> {
   const res = await fetch(remote)
   if (!res.ok) {
     console.error(`Error: Can't get ${remote}`)
-    process.exit(1)
+    process.exitCode = 1
+    throw new Fail(`Failed to fetch remote script: ${remote} (${res.status})`)
   }
-  const script = await res.text()
-  const pathname = new URL(remote).pathname
-  const name = basename(pathname)
-  const ext = extname(pathname) || '.mjs'
-  const filepath = join(process.cwd(), `${name}-${randomId()}${ext}`)
-  await writeAndImport(script, filepath)
+  return res.text()
 }
 
-async function writeAndImport(
-  script: string | Buffer,
-  filepath: string,
-  origin = filepath
-) {
-  await fs.writeFile(filepath, script.toString())
-  try {
-    await importPath(filepath, origin)
-  } finally {
-    await fs.rm(filepath)
-  }
-}
-
-async function importPath(filepath: string, origin = filepath) {
-  const ext = extname(filepath)
-
-  if (ext === '') {
-    const tmpFilename = fs.existsSync(`${filepath}.mjs`)
-      ? `${basename(filepath)}-${randomId()}.mjs`
-      : `${basename(filepath)}.mjs`
-
-    return writeAndImport(
-      await fs.readFile(filepath),
-      join(dirname(filepath), tmpFilename),
-      origin
-    )
-  }
-  if (ext === '.md') {
-    return writeAndImport(
-      transformMarkdown(await fs.readFile(filepath)),
-      join(dirname(filepath), basename(filepath) + '.mjs'),
-      origin
-    )
-  }
-  if (argv.install) {
-    const deps = parseDeps(await fs.readFile(filepath))
-    await installDeps(deps, dirname(filepath))
-  }
-  const __filename = resolve(origin)
-  const __dirname = dirname(__filename)
+export function injectGlobalRequire(origin: string): void {
+  const __filename = path.resolve(origin)
+  const __dirname = path.dirname(__filename)
   const require = createRequire(origin)
-  Object.assign(global, { __filename, __dirname, require })
-  await import(url.pathToFileURL(filepath).toString())
+  Object.assign(globalThis, { __filename, __dirname, require })
 }
 
-function transformMarkdown(buf: Buffer) {
-  const source = buf.toString()
-  const output = []
-  let state = 'root'
-  let codeBlockEnd = ''
-  let prevLineIsEmpty = true
-  const jsCodeBlock = /^(```+|~~~+)(js|javascript)$/
-  const shCodeBlock = /^(```+|~~~+)(sh|bash)$/
-  const otherCodeBlock = /^(```+|~~~+)(.*)$/
-  for (let line of source.split('\n')) {
-    switch (state) {
-      case 'root':
-        if (/^( {4}|\t)/.test(line) && prevLineIsEmpty) {
-          output.push(line)
-          state = 'tab'
-        } else if (jsCodeBlock.test(line)) {
-          output.push('')
-          state = 'js'
-          codeBlockEnd = line.match(jsCodeBlock)![1]
-        } else if (shCodeBlock.test(line)) {
-          output.push('await $`')
-          state = 'bash'
-          codeBlockEnd = line.match(shCodeBlock)![1]
-        } else if (otherCodeBlock.test(line)) {
-          output.push('')
-          state = 'other'
-          codeBlockEnd = line.match(otherCodeBlock)![1]
-        } else {
-          prevLineIsEmpty = line === ''
-          output.push('// ' + line)
-        }
-        break
-      case 'tab':
-        if (/^( +|\t)/.test(line)) {
-          output.push(line)
-        } else if (line === '') {
-          output.push('')
-        } else {
-          output.push('// ' + line)
-          state = 'root'
-        }
-        break
-      case 'js':
-        if (line === codeBlockEnd) {
-          output.push('')
-          state = 'root'
-        } else {
-          output.push(line)
-        }
-        break
-      case 'bash':
-        if (line === codeBlockEnd) {
-          output.push('`')
-          state = 'root'
-        } else {
-          output.push(line)
-        }
-        break
-      case 'other':
-        if (line === codeBlockEnd) {
-          output.push('')
-          state = 'root'
-        } else {
-          output.push('// ' + line)
-        }
-        break
+export function isMain(
+  meta: ImportMeta['url'] | ImportMeta = import.meta.url,
+  scriptpath: string = process.argv[1]
+): boolean {
+  if (typeof meta === 'string') {
+    if (meta.startsWith('file:')) {
+      const modulePath = url.fileURLToPath(meta).replace(/\.\w+$/, '')
+      const mainPath = fs.realpathSync(scriptpath).replace(/\.\w+$/, '')
+      return mainPath === modulePath
     }
+
+    return false
   }
-  return output.join('\n')
+
+  return !!meta.main
 }
 
-function getVersion(): string {
-  return createRequire(import.meta.url)('../package.json').version
+export function normalizeExt(ext?: string): string | undefined {
+  return ext ? path.parse(`foo.${ext}`).ext : ext
+}
+
+// prettier-ignore
+function getFilepath(cwd = '.', name = 'zx', _ext?: string): string {
+  const ext = _ext || argv.ext || EXT
+  return [
+    name + ext,
+    name + '-' + randomId() + ext,
+  ]
+    .map(f => path.resolve(process.cwd(), cwd, f))
+    .find(f => !fs.existsSync(f))!
 }

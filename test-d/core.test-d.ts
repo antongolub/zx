@@ -14,8 +14,8 @@
 
 import assert from 'node:assert'
 import { Readable, Writable } from 'node:stream'
-import { expectType } from 'tsd'
-import { $, ProcessPromise, ProcessOutput, within } from '../src/core.js'
+import { expectError, expectType } from 'tsd'
+import { $, ProcessPromise, ProcessOutput, within } from 'zx'
 
 let p = $`cmd`
 assert(p instanceof ProcessPromise)
@@ -26,6 +26,14 @@ expectType<Readable>(p.stderr)
 expectType<ProcessPromise>(p.nothrow())
 expectType<ProcessPromise>(p.quiet())
 expectType<ProcessPromise>(p.pipe($`cmd`))
+expectType<ProcessPromise>(p.pipe`cmd`)
+expectType<
+  Writable & PromiseLike<ProcessOutput & Writable> & { run: () => void }
+>(p.pipe('file'))
+expectType<
+  typeof process.stdout &
+    PromiseLike<ProcessOutput & typeof process.stdout> & { run: () => void }
+>(p.pipe(process.stdout))
 expectType<ProcessPromise>(p.stdio('pipe'))
 expectType<ProcessPromise>(p.timeout('1s'))
 expectType<Promise<void>>(p.kill())
@@ -40,5 +48,23 @@ expectType<string>(o.stdout)
 expectType<string>(o.stderr)
 expectType<number | null>(o.exitCode)
 expectType<NodeJS.Signals | null>(o.signal)
+// prettier-ignore
+expectType<ProcessOutput>(new ProcessOutput({
+  code: null,
+  signal: null,
+  duration: 0,
+  store: { stdout: [], stderr: [], stdall: [] },
+  error: null,
+  from: ''
+}))
+
+expectType<ProcessOutput>(new ProcessOutput(null, null, '', '', '', '', 1))
+expectType<ProcessOutput>(new ProcessOutput(null, null, '', '', '', ''))
+expectError(new ProcessOutput('1'))
 
 expectType<'banana'>(within(() => 'apple' as 'banana'))
+
+expectType<ProcessPromise>($`cmd`)
+expectType<ProcessPromise>($({ sync: false })`cmd`)
+expectType<ProcessOutput>($({ sync: true })`cmd`)
+expectType<ProcessOutput>($.sync`cmd`)

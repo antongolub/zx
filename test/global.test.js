@@ -13,11 +13,17 @@
 // limitations under the License.
 
 import assert from 'node:assert'
-import { test, describe } from 'node:test'
+import { test, describe, after } from 'node:test'
 import '../build/globals.js'
 import * as index from '../build/index.js'
 
 describe('global', () => {
+  after(() => {
+    for (const key of Object.keys(index)) {
+      delete global[key]
+    }
+  })
+
   test('global cd()', async () => {
     const cwd = (await $`pwd`).toString().trim()
     cd('/')
@@ -27,7 +33,7 @@ describe('global', () => {
   })
 
   test('injects zx index to global', () => {
-    for (let [key, value] of Object.entries(index)) {
+    for (const [key, value] of Object.entries(index)) {
       assert.equal(global[key], value)
     }
   })

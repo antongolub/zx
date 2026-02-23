@@ -12,88 +12,176 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import assert from 'node:assert'
+import { Buffer } from 'node:buffer'
+import process from 'node:process'
 import { createInterface } from 'node:readline'
-import { $, within, ProcessOutput } from './core.js'
-import { type Duration, isString, parseDuration } from './util.js'
+import { Readable } from 'node:stream'
+import { type Mode } from 'node:fs'
 import {
-  chalk,
-  minimist,
-  globbyModule,
-  GlobbyOptions,
+  $,
+  within,
+  ProcessOutput,
+  type ProcessPromise,
+  path,
+  os,
+  Fail,
+} from './core.ts'
+import {
+  type Duration,
+  getLast,
+  identity,
+  isStringLiteral,
+  parseBool,
+  parseDuration,
+  randomId,
+  toCamelCase,
+} from './util.ts'
+import {
+  type RequestInfo,
+  type RequestInit,
   nodeFetch,
-  RequestInfo,
-  RequestInit,
-} from './vendor.js'
+  minimist,
+  fs,
+} from './vendor.ts'
 
-export { default as path } from 'node:path'
-export * as os from 'node:os'
+export { versions } from './versions.ts'
 
-export let argv = minimist(process.argv.slice(2))
-export function updateArgv(args: string[]) {
-  argv = minimist(args)
-  ;(global as any).argv = argv
+export function tempdir(
+  prefix: string = `zx-${randomId()}`,
+  mode?: Mode
+): string {
+  const dirpath = path.join(os.tmpdir(), prefix)
+  fs.mkdirSync(dirpath, { recursive: true, mode })
+
+  return dirpath
 }
 
-export const globby = Object.assign(function globby(
-  patterns: string | readonly string[],
-  options?: GlobbyOptions
-) {
-  return globbyModule.globby(patterns, options)
-}, globbyModule) as (typeof globbyModule)['globby'] & typeof globbyModule
-export const glob = globby
+export function tempfile(
+  name?: string,
+  data?: string | Buffer,
+  mode?: Mode
+): string {
+  const filepath = name
+    ? path.join(tempdir(), name)
+    : path.join(os.tmpdir(), `zx-${randomId()}`)
 
-export function sleep(duration: Duration) {
+  if (data === undefined) fs.closeSync(fs.openSync(filepath, 'w', mode))
+  else fs.writeFileSync(filepath, data, { mode })
+
+  return filepath
+}
+
+export { tempdir as tmpdir, tempfile as tmpfile }
+
+type ArgvOpts = minimist.Opts & { camelCase?: boolean; parseBoolean?: boolean }
+
+export const parseArgv = (
+  args: string[] = process.argv.slice(2),
+  opts: ArgvOpts = {},
+  defs: Record<string, any> = {}
+): minimist.ParsedArgs =>
+  Object.entries<string>(minimist(args, opts)).reduce<minimist.ParsedArgs>(
+    (m, [k, v]) => {
+      const kTrans = opts.camelCase ? toCamelCase : identity
+      const vTrans = opts.parseBoolean ? parseBool : identity
+      const [_k, _v] = k === '--' || k === '_' ? [k, v] : [kTrans(k), vTrans(v)]
+      m[_k] = _v
+      return m
+    },
+    defs as minimist.ParsedArgs
+  )
+
+export function updateArgv(args?: string[], opts?: ArgvOpts) {
+  for (const k in argv) delete argv[k]
+  parseArgv(args, opts, argv)
+}
+
+export const argv: minimist.ParsedArgs = parseArgv()
+
+export function sleep(duration: Duration): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, parseDuration(duration))
   })
 }
 
-export async function fetch(url: RequestInfo, init?: RequestInit) {
-  $.log({ kind: 'fetch', url, init })
-  return nodeFetch(url, init)
+const responseToReadable = (response: Response, rs: Readable) => {
+  const reader = response.body?.getReader()
+  if (!reader) {
+    rs.push(null)
+    return rs
+  }
+  rs._read = async () => {
+    const result = await reader.read()
+    rs.push(result.done ? null : Buffer.from(result.value))
+  }
+  return rs
+}
+
+export function fetch(
+  url: RequestInfo,
+  init?: RequestInit
+): Promise<Response> & {
+  pipe: {
+    (dest: TemplateStringsArray, ...args: any[]): ProcessPromise
+    <D>(dest: D): D
+  }
+} {
+  $.log({ kind: 'fetch', url, init, verbose: !$.quiet && $.verbose })
+  const p = nodeFetch(url, init)
+
+  return Object.assign(p, {
+    pipe(dest: any, ...args: any[]) {
+      const rs = new Readable()
+      const _dest = isStringLiteral(dest, ...args)
+        ? $({
+            halt: true,
+            signal: init?.signal as AbortSignal,
+          })(dest as TemplateStringsArray, ...args)
+        : dest
+      p.then(
+        (r) => responseToReadable(r, rs).pipe(_dest.run?.()),
+        (err) => _dest.abort?.(err)
+      )
+      return _dest
+    },
+  })
 }
 
 export function echo(...args: any[]): void
 export function echo(pieces: TemplateStringsArray, ...args: any[]) {
-  let msg
-  const lastIdx = pieces.length - 1
-  if (
-    Array.isArray(pieces) &&
-    pieces.every(isString) &&
-    lastIdx === args.length
-  ) {
-    msg =
-      args.map((a, i) => pieces[i] + stringify(a)).join('') + pieces[lastIdx]
-  } else {
-    msg = [pieces, ...args].map(stringify).join(' ')
-  }
+  const msg = isStringLiteral(pieces, ...args)
+    ? args.map((a, i) => pieces[i] + stringify(a)).join('') + getLast(pieces)
+    : [pieces, ...args].map(stringify).join(' ')
+
   console.log(msg)
 }
 
-function stringify(arg: ProcessOutput | any) {
-  if (arg instanceof ProcessOutput) {
-    return arg.toString().replace(/\n$/, '')
-  }
-  return `${arg}`
+function stringify(arg: any) {
+  return arg instanceof ProcessOutput ? arg.toString().trimEnd() : `${arg}`
 }
 
 export async function question(
   query?: string,
-  options?: { choices: string[] }
+  {
+    choices,
+    input = process.stdin,
+    output = process.stdout,
+  }: {
+    choices?: string[]
+    input?: NodeJS.ReadStream
+    output?: NodeJS.WriteStream
+  } = {}
 ): Promise<string> {
-  let completer = undefined
-  if (options && Array.isArray(options.choices)) {
-    /* c8 ignore next 5 */
-    completer = function completer(line: string) {
-      const completions = options.choices
-      const hits = completions.filter((c) => c.startsWith(line))
-      return [hits.length ? hits : completions, line]
-    }
-  }
+  /* c8 ignore next 5 */
+  const completer = Array.isArray(choices)
+    ? (line: string) => {
+        const hits = choices.filter((c) => c.startsWith(line))
+        return [hits.length ? hits : choices, line]
+      }
+    : undefined
   const rl = createInterface({
-    input: process.stdin,
-    output: process.stdout,
+    input,
+    output,
     terminal: true,
     completer,
   })
@@ -106,10 +194,9 @@ export async function question(
   )
 }
 
-export async function stdin() {
+export async function stdin(stream: Readable = process.stdin): Promise<string> {
   let buf = ''
-  process.stdin.setEncoding('utf8')
-  for await (const chunk of process.stdin) {
+  for await (const chunk of stream.setEncoding('utf8')) {
     buf += chunk
   }
   return buf
@@ -123,56 +210,54 @@ export async function retry<T>(
 ): Promise<T>
 export async function retry<T>(
   count: number,
-  a: Duration | Generator<number> | (() => T),
-  b?: () => T
+  d: Duration | Generator<number> | (() => T),
+  cb?: () => T
 ): Promise<T> {
+  if (typeof d === 'function') return retry(count, 0, d)
+  if (!cb) throw new Fail('Callback is required for retry')
+
   const total = count
-  let callback: () => T
-  let delayStatic = 0
-  let delayGen: Generator<number> | undefined
-  if (typeof a == 'function') {
-    callback = a
-  } else {
-    if (typeof a == 'object') {
-      delayGen = a
-    } else {
-      delayStatic = parseDuration(a)
-    }
-    assert(b)
-    callback = b
-  }
-  let lastErr: unknown
+  const gen =
+    typeof d === 'object'
+      ? d
+      : (function* (d) {
+          while (true) yield d
+        })(parseDuration(d))
+
   let attempt = 0
+  let lastErr: unknown
   while (count-- > 0) {
     attempt++
     try {
-      return await callback()
+      return await cb()
     } catch (err) {
-      let delay = 0
-      if (delayStatic > 0) delay = delayStatic
-      if (delayGen) delay = delayGen.next().value
+      lastErr = err
+      const delay = gen.next().value
+
       $.log({
         kind: 'retry',
-        error:
-          chalk.bgRed.white(' FAIL ') +
-          ` Attempt: ${attempt}${total == Infinity ? '' : `/${total}`}` +
-          (delay > 0 ? `; next in ${delay}ms` : ''),
+        total,
+        attempt,
+        delay,
+        exception: err,
+        verbose: !$.quiet && $.verbose,
+        error: `FAIL Attempt: ${attempt}/${total}, next: ${delay}`, // legacy
       })
-      lastErr = err
-      if (count == 0) break
-      if (delay) await sleep(delay)
+      if (delay > 0) await sleep(delay)
     }
   }
   throw lastErr
 }
 
-export function* expBackoff(max: Duration = '60s', rand: Duration = '100ms') {
+export function* expBackoff(
+  max: Duration = '60s',
+  delay: Duration = '100ms'
+): Generator<number, void, unknown> {
   const maxMs = parseDuration(max)
-  const randMs = parseDuration(rand)
-  let n = 1
+  const randMs = parseDuration(delay)
+  let n = 0
   while (true) {
-    const ms = Math.floor(Math.random() * randMs)
-    yield Math.min(2 ** n++, maxMs) + ms
+    yield Math.min(randMs * 2 ** n++, maxMs)
   }
 }
 
@@ -182,23 +267,21 @@ export async function spinner<T>(
   title: string | (() => T),
   callback?: () => T
 ): Promise<T> {
-  if (typeof title == 'function') {
-    callback = title
-    title = ''
-  }
+  if (typeof title === 'function') return spinner('', title)
+  if ($.quiet || process.env.CI) return callback!()
+
   let i = 0
-  const spin = () =>
-    process.stderr.write(`  ${'⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'[i++ % 10]} ${title}\r`)
+  const stream = $.log.output || process.stderr
+  const spin = () => stream.write(`  ${'⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'[i++ % 10]} ${title}\r`)
   return within(async () => {
     $.verbose = false
     const id = setInterval(spin, 100)
-    let result: T
+
     try {
-      result = await callback!()
+      return await callback!()
     } finally {
-      clearInterval(id as NodeJS.Timeout)
-      process.stderr.write(' '.repeat((process.stdout.columns || 1) - 1) + '\r')
+      clearInterval(id as ReturnType<typeof setTimeout>)
+      stream.write(' '.repeat((process.stdout.columns || 1) - 1) + '\r')
     }
-    return result
   })
 }

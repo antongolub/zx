@@ -15,29 +15,23 @@
 import assert from 'node:assert'
 import { test, describe } from 'node:test'
 import {
-  exitCodeInfo,
-  errnoMessage,
-  formatCmd,
   isString,
+  isStringLiteral,
+  identity,
+  once,
   noop,
   parseDuration,
+  parseBool,
   quote,
   quotePowerShell,
   randomId,
-  getCallerLocationFromString,
-} from '../build/util.js'
+  // normalizeMultilinePieces,
+  preferLocalBin,
+  toCamelCase,
+  getLast,
+} from '../build/util.cjs'
 
 describe('util', () => {
-  test('exitCodeInfo()', () => {
-    assert.equal(exitCodeInfo(2), 'Misuse of shell builtins')
-  })
-
-  test('errnoMessage()', () => {
-    assert.equal(errnoMessage(-2), 'No such file or directory')
-    assert.equal(errnoMessage(1e9), 'Unknown error')
-    assert.equal(errnoMessage(undefined), 'Unknown error')
-  })
-
   test('randomId()', () => {
     assert.ok(/^[a-z0-9]+$/.test(randomId()))
     assert.ok(
@@ -49,94 +43,88 @@ describe('util', () => {
     assert.ok(noop() === undefined)
   })
 
+  test('once()', () => {
+    const fn = once(identity)
+    assert.equal(identity(1), 1)
+    assert.equal(identity(2), 2)
+    assert.equal(fn(1), 1)
+    assert.equal(fn(2), 1)
+  })
+
   test('isString()', () => {
     assert.ok(isString('string'))
     assert.ok(!isString(1))
   })
 
+  test('isStringLiteral()', () => {
+    const bar = 'baz'
+    assert.ok(isStringLiteral``)
+    assert.ok(isStringLiteral`foo`)
+    assert.ok(isStringLiteral`foo ${bar}`)
+
+    assert.ok(!isStringLiteral(''))
+    assert.ok(!isStringLiteral('foo'))
+    assert.ok(!isStringLiteral(['foo']))
+  })
+
   test('quote()', () => {
     assert.ok(quote('string') === 'string')
+    assert.ok(quote('') === `$''`)
     assert.ok(quote(`'\f\n\r\t\v\0`) === `$'\\'\\f\\n\\r\\t\\v\\0'`)
   })
 
-  test('quotePowerShgell()', () => {
+  test('quotePowerShell()', () => {
     assert.equal(quotePowerShell('string'), 'string')
     assert.equal(quotePowerShell(`'`), `''''`)
+    assert.equal(quotePowerShell(''), `''`)
   })
 
   test('duration parsing works', () => {
+    assert.equal(parseDuration(0), 0)
     assert.equal(parseDuration(1000), 1000)
+    assert.equal(parseDuration('100'), 100)
     assert.equal(parseDuration('2s'), 2000)
     assert.equal(parseDuration('500ms'), 500)
     assert.equal(parseDuration('2m'), 120000)
-    assert.throws(() => parseDuration('100'))
+    assert.throws(() => parseDuration('f2ms'))
+    assert.throws(() => parseDuration('2mss'))
     assert.throws(() => parseDuration(NaN))
     assert.throws(() => parseDuration(-1))
   })
 
-  test('formatCwd works', () => {
+  // test('normalizeMultilinePieces()', () => {
+  //   assert.equal(
+  //     normalizeMultilinePieces([' a ', 'b    c    d', ' e']).join(','),
+  //     ' a ,b c d, e'
+  //   )
+  // })
+
+  test('preferLocalBin()', () => {
+    const env = {
+      PATH: '/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/usr/local/sbin',
+    }
+    const _env = preferLocalBin(env, process.cwd())
     assert.equal(
-      formatCmd(`echo $'hi'`),
-      "$ \u001b[92mecho\u001b[39m \u001b[93m$\u001b[39m\u001b[93m'hi\u001b[39m\u001b[93m'\u001b[39m\n"
-    )
-    assert.equal(
-      formatCmd(`while true; do "$" done`),
-      '$ \u001b[96mwhile\u001b[39m \u001b[92mtrue\u001b[39m\u001b[96m;\u001b[39m \u001b[96mdo\u001b[39m \u001b[93m"$\u001b[39m\u001b[93m"\u001b[39m \u001b[96mdone\u001b[39m\n'
-    )
-    assert.equal(
-      formatCmd(`echo '\n str\n'`),
-      "$ \u001b[92mecho\u001b[39m \u001b[93m'\u001b[39m\n> \u001b[93m str\u001b[39m\n> \u001b[93m'\u001b[39m\n"
-    )
-    assert.equal(
-      formatCmd(`$'\\''`),
-      "$ \u001b[93m$\u001b[39m\u001b[93m'\u001b[39m\u001b[93m\\\u001b[39m\u001b[93m'\u001b[39m\u001b[93m'\u001b[39m\n"
+      _env.PATH,
+      `${process.cwd()}/node_modules/.bin:${process.cwd()}:${env.PATH}`
     )
   })
-})
 
-test('getCallerLocation: empty', () => {
-  assert.equal(getCallerLocationFromString(), 'unknown')
-})
+  test('toCamelCase()', () => {
+    assert.equal(toCamelCase('VERBOSE'), 'verbose')
+    assert.equal(toCamelCase('PREFER_LOCAL'), 'preferLocal')
+    assert.equal(toCamelCase('SOME_MORE_BIG_STR'), 'someMoreBigStr')
+    assert.equal(toCamelCase('kebab-input-str'), 'kebabInputStr')
+  })
 
-test('getCallerLocation: no-match', () => {
-  assert.equal(getCallerLocationFromString('stack\nstring'), 'stack\nstring')
-})
+  test('parseBool()', () => {
+    assert.equal(parseBool('true'), true)
+    assert.equal(parseBool('false'), false)
+    assert.equal(parseBool('other'), 'other')
+  })
 
-test(`getCallerLocationFromString-v8`, () => {
-  const stack = `
-    Error
-      at getCallerLocation (/Users/user/test.js:22:17)
-      at e (/Users/user/test.js:34:13)
-      at d (/Users/user/test.js:11:5)
-      at c (/Users/user/test.js:8:5)
-      at b (/Users/user/test.js:5:5)
-      at a (/Users/user/test.js:2:5)
-      at Object.<anonymous> (/Users/user/test.js:37:1)
-      at Module._compile (node:internal/modules/cjs/loader:1254:14)
-      at Module._extensions..js (node:internal/modules/cjs/loader:1308:10)
-      at Module.load (node:internal/modules/cjs/loader:1117:32)
-      at Module._load (node:internal/modules/cjs/loader:958:12)
-    `
-  assert.match(getCallerLocationFromString(stack), /^.*:11:5.*$/)
-})
-
-test(`getCallerLocationFromString-JSC`, () => {
-  const stack = `
-    getCallerLocation@/Users/user/test.js:22:17
-    e@/Users/user/test.js:34:13
-    d@/Users/user/test.js:11:5
-    c@/Users/user/test.js:8:5
-    b@/Users/user/test.js:5:5
-    a@/Users/user/test.js:2:5
-    module code@/Users/user/test.js:37:1
-    evaluate@[native code]
-    moduleEvaluation@[native code]
-    moduleEvaluation@[native code]
-    @[native code]
-    asyncFunctionResume@[native code]
-    promiseReactionJobWithoutPromise@[native code]
-    promiseReactionJob@[native code]
-    d@/Users/user/test.js:11:5
-  `
-  assert.match(getCallerLocationFromString(stack), /^.*:11:5.*$/)
+  test('getLast()', () => {
+    assert.equal(getLast([1, 2, 3]), 3)
+    assert.equal(getLast([]), undefined)
+  })
 })

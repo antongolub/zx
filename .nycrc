@@ -2,5 +2,17 @@
   "reporter": ["html", "text"],
   "lines": 98,
   "branches": "90",
-  "statements": "98"
+  "statements": "98",
+  "exclude": [
+    "build/deno.js",
+    "build/vendor-extra.cjs",
+    "build/vendor-core.cjs",
+    "build/esblib.cjs",
+    "test/**",
+    "scripts",
+    "src/util.ts",
+    "src/core.ts",
+    "src/index.ts",
+    "src/vendor-extra.ts"
+  ]
 }

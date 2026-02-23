@@ -1,0 +1,21 @@
+pre-commit:
+  parallel: true
+  commands:
+    format:
+      glob: '*.{js,ts,md,yml,yaml}'
+      run: npm run fmt && git add {staged_files}
+
+commit-msg:
+  commands:
+    lint-commit-msg:
+      run: npx commitlint --edit
+
+pre-push:
+  parallel: true
+  commands:
+    license:
+      run: npm run test:license
+    size:
+      run: npm run test:size
+    circular:
+      run: npm run test:circular

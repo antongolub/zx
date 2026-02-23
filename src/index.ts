@@ -12,24 +12,36 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { ProcessPromise } from './core.js'
+import { type ProcessPromise, bus } from './core.ts'
+import { versions } from './goods.ts'
 
-export * from './core.js'
-export * from './goods.js'
-export { minimist, chalk, fs, which, YAML, ps } from './vendor.js'
+bus.lock()
 
-export { type Duration, quote, quotePowerShell } from './util.js'
+export * from './core.ts'
+export * from './goods.ts'
+export {
+  minimist,
+  dotenv,
+  fs,
+  YAML,
+  MAML,
+  glob,
+  glob as globby,
+} from './vendor.ts'
+
+export const VERSION: string = versions.zx || '0.0.0'
+export const version: string = VERSION
 
 /**
  *  @deprecated Use $`cmd`.nothrow() instead.
  */
-export function nothrow(promise: ProcessPromise) {
+export function nothrow(promise: ProcessPromise): ProcessPromise {
   return promise.nothrow()
 }
 
 /**
  * @deprecated Use $`cmd`.quiet() instead.
  */
-export function quiet(promise: ProcessPromise) {
+export function quiet(promise: ProcessPromise): ProcessPromise {
   return promise.quiet()
 }
